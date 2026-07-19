@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">中国象棋</string>
+    <string name="title_activity_main">中国象棋</string>
+    <string name="package_name">com.mumujiumu.xiangqi</string>
+    <string name="custom_url_scheme">com.mumujiumu.xiangqi</string>
+</resources>

@@ -15,9 +15,23 @@ desktop.ini
 *.tmp
 node_modules/
 
-# Electron 打包产物
+# 构建产物
 release/
 dist/
+www/
+
+# Electron（已移除）
+main.js
+
+# Android 构建产物
+android/app/build/
+android/.gradle/
+android/captures/
+android/local.properties
+
+# 签名密钥（不要提交）
+*.keystore
+*.jks
 
 # WorkBuddy 工作区数据
 .workbuddy/

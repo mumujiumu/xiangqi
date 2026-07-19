@@ -2,15 +2,89 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>中国象棋 · 楚河汉界</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <div class="app">
+    <!-- 开始界面：模式选择 -->
+    <div class="menu-screen" id="menuScreen">
+        <div class="menu-card">
+            <h1>中 国 象 棋</h1>
+            <p class="menu-subtitle">楚河汉界 · 见招拆招</p>
+            <div class="menu-modes">
+                <button class="mode-btn" id="modePvp">
+                    <span class="mode-icon">⚔</span>
+                    <span class="mode-name">双人对战</span>
+                    <span class="mode-desc">同屏人机对战</span>
+                </button>
+                <button class="mode-btn" id="modePve">
+                    <span class="mode-icon">🤖</span>
+                    <span class="mode-name">人机对战</span>
+                    <span class="mode-desc">挑战AI</span>
+                </button>
+                <button class="mode-btn" id="modeBluetooth">
+                    <span class="mode-icon">📡</span>
+                    <span class="mode-name">蓝牙对战</span>
+                    <span class="mode-desc">远程对战</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI 难度选择界面 -->
+    <div class="menu-screen hidden" id="difficultyScreen">
+        <div class="menu-card">
+            <h2>选择难度</h2>
+            <div class="menu-modes">
+                <button class="mode-btn" data-difficulty="1">
+                    <span class="mode-name">简单</span>
+                    <span class="mode-desc">适合新手</span>
+                </button>
+                <button class="mode-btn" data-difficulty="3">
+                    <span class="mode-name">中等</span>
+                    <span class="mode-desc">有一定挑战</span>
+                </button>
+                <button class="mode-btn" data-difficulty="4">
+                    <span class="mode-name">困难</span>
+                    <span class="mode-desc">深思熟虑</span>
+                </button>
+            </div>
+            <button class="mode-btn mode-back" id="backFromDifficulty">
+                <span class="mode-name">返回</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- 蓝牙对战界面 -->
+    <div class="menu-screen hidden" id="bluetoothScreen">
+        <div class="menu-card">
+            <h2>蓝牙对战</h2>
+            <div class="menu-modes">
+                <button class="mode-btn" id="btHost">
+                    <span class="mode-icon">📡</span>
+                    <span class="mode-name">创建房间</span>
+                    <span class="mode-desc">等待对手连接</span>
+                </button>
+                <button class="mode-btn" id="btJoin">
+                    <span class="mode-icon">🔍</span>
+                    <span class="mode-name">加入房间</span>
+                    <span class="mode-desc">搜索附近设备</span>
+                </button>
+            </div>
+            <div class="bt-status" id="btStatus"></div>
+            <div class="bt-device-list" id="btDeviceList"></div>
+            <button class="mode-btn mode-back" id="backFromBluetooth">
+                <span class="mode-name">返回</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- 游戏主界面 -->
+    <div class="app hidden" id="gameApp">
         <header class="app-header">
             <h1>中 国 象 棋</h1>
-            <p class="subtitle">楚河汉界 · 见招拆招</p>
+            <p class="subtitle" id="modeLabel">楚河汉界 · 见招拆招</p>
         </header>
 
         <main class="game-area">
@@ -45,6 +119,7 @@
                     <button class="btn btn-primary" id="restartBtn">重新开始</button>
                     <button class="btn" id="undoBtn">悔棋</button>
                     <button class="btn" id="flipBtn">翻转棋盘</button>
+                    <button class="btn btn-back" id="backToMenu">返回菜单</button>
                 </div>
                 <div class="move-log">
                     <div class="log-title">棋谱</div>

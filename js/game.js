@@ -2,6 +2,8 @@
  * 中国象棋 · 游戏引擎
  * 棋盘坐标：board[row][col]，row 0-9（上到下），col 0-8（左到右）
  * 黑方在上（row 0-4），红方在下（row 5-9）
+ *
+ * 游戏模式：pvp（双人）、pve（人机）、bluetooth（蓝牙）
  */
 
 // ============ 棋子定义 ============
@@ -13,13 +15,11 @@ const PIECE_CHAR = {
 // 初始局面
 function createInitialBoard() {
     const b = Array.from({ length: 10 }, () => Array(9).fill(null));
-    // 黑方（上方）
     const blackBack = ['chariot','horse','elephant','advisor','king','advisor','elephant','horse','chariot'];
     blackBack.forEach((t, c) => b[0][c] = { type: t, side: 'black' });
     b[2][1] = { type: 'cannon', side: 'black' };
     b[2][7] = { type: 'cannon', side: 'black' };
     [0,2,4,6,8].forEach(c => b[3][c] = { type: 'pawn', side: 'black' });
-    // 红方（下方）
     const redBack = ['chariot','horse','elephant','advisor','king','advisor','elephant','horse','chariot'];
     redBack.forEach((t, c) => b[9][c] = { type: t, side: 'red' });
     b[7][1] = { type: 'cannon', side: 'red' };
@@ -32,6 +32,13 @@ function createInitialBoard() {
 let board, currentSide, selected, validMoves, history, captured;
 let flipped = false;
 
+// 模式管理
+let gameMode = 'pvp';   // 'pvp' | 'pve' | 'bluetooth'
+let aiSide = 'black';   // AI 执黑
+let aiDepth = 3;        // AI 搜索深度
+let aiThinking = false;
+let bluetoothSide = 'red'; // 蓝牙模式中本地玩家执方
+
 function resetGame() {
     board = createInitialBoard();
     currentSide = 'red';
@@ -39,8 +46,14 @@ function resetGame() {
     validMoves = [];
     history = [];
     captured = { red: [], black: [] };
+    aiThinking = false;
     updateUI();
     render();
+
+    // 如果AI执红，先走
+    if (gameMode === 'pve' && aiSide === 'red') {
+        scheduleAI();
+    }
 }
 
 // ============ 棋盘常量 ============
@@ -77,7 +90,6 @@ function crossedRiver(row, side) {
 
 function inBoard(r, c) { return r >= 0 && r <= 9 && c >= 0 && c <= 8; }
 
-// 获取一个棋子的原始可走点（不考虑将军限制）
 function getRawMoves(b, row, col) {
     const piece = b[row][col];
     if (!piece) return [];
@@ -94,7 +106,6 @@ function getRawMoves(b, row, col) {
 
     switch (type) {
         case 'king': {
-            // 帅/将：九宫内一步直行
             [[-1,0],[1,0],[0,-1],[0,1]].forEach(([dr,dc]) => {
                 const nr = row + dr, nc = col + dc;
                 if (inPalace(nr, nc, side)) tryAdd(nr, nc);
@@ -102,7 +113,6 @@ function getRawMoves(b, row, col) {
             break;
         }
         case 'advisor': {
-            // 仕/士：九宫内一步斜行
             [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(([dr,dc]) => {
                 const nr = row + dr, nc = col + dc;
                 if (inPalace(nr, nc, side)) tryAdd(nr, nc);
@@ -110,14 +120,11 @@ function getRawMoves(b, row, col) {
             break;
         }
         case 'elephant': {
-            // 相/象：田字两步斜行，不过河，不塞象眼
             [[-2,-2],[-2,2],[2,-2],[2,2]].forEach(([dr,dc]) => {
                 const nr = row + dr, nc = col + dc;
                 if (!inBoard(nr, nc)) return;
-                // 不过河
                 if (side === 'red' && nr < 5) return;
                 if (side === 'black' && nr > 4) return;
-                // 塞象眼
                 const mr = row + dr/2, mc = col + dc/2;
                 if (b[mr][mc]) return;
                 tryAdd(nr, nc);
@@ -125,23 +132,21 @@ function getRawMoves(b, row, col) {
             break;
         }
         case 'horse': {
-            // 马：日字，蹩马腿
             const horseMoves = [
-                [-2,-1,-1,0],[-2,1,-1,0],   // 上
-                [2,-1,1,0],[2,1,1,0],       // 下
-                [-1,-2,0,-1],[1,-2,0,-1],   // 左
-                [-1,2,0,1],[1,2,0,1]        // 右
+                [-2,-1,-1,0],[-2,1,-1,0],
+                [2,-1,1,0],[2,1,1,0],
+                [-1,-2,0,-1],[1,-2,0,-1],
+                [-1,2,0,1],[1,2,0,1]
             ];
             horseMoves.forEach(([dr,dc,br,bc]) => {
                 const nr = row + dr, nc = col + dc;
                 if (!inBoard(nr, nc)) return;
-                if (b[row + br][col + bc]) return; // 蹩马腿
+                if (b[row + br][col + bc]) return;
                 tryAdd(nr, nc);
             });
             break;
         }
         case 'chariot': {
-            // 车：直线任意步，不跳
             [[-1,0],[1,0],[0,-1],[0,1]].forEach(([dr,dc]) => {
                 let nr = row + dr, nc = col + dc;
                 while (inBoard(nr, nc)) {
@@ -154,7 +159,6 @@ function getRawMoves(b, row, col) {
             break;
         }
         case 'cannon': {
-            // 炮：移动如车，吃子需隔一子（炮架）
             [[-1,0],[1,0],[0,-1],[0,1]].forEach(([dr,dc]) => {
                 let nr = row + dr, nc = col + dc;
                 let jumped = false;
@@ -175,11 +179,10 @@ function getRawMoves(b, row, col) {
             break;
         }
         case 'pawn': {
-            // 兵/卒
             const forward = side === 'red' ? -1 : 1;
-            tryAdd(row + forward, col); // 向前
+            tryAdd(row + forward, col);
             if (crossedRiver(row, side)) {
-                tryAdd(row, col - 1);   // 过河可横走
+                tryAdd(row, col - 1);
                 tryAdd(row, col + 1);
             }
             break;
@@ -188,7 +191,6 @@ function getRawMoves(b, row, col) {
     return moves;
 }
 
-// 找帅/将位置
 function findKing(b, side) {
     for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 9; c++) {
@@ -199,13 +201,11 @@ function findKing(b, side) {
     return null;
 }
 
-// 判断 side 方是否被将军
 function isInCheck(b, side) {
     const king = findKing(b, side);
     if (!king) return true;
     const enemy = side === 'red' ? 'black' : 'red';
 
-    // 检查所有敌方棋子能否吃到将
     for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 9; c++) {
             const p = b[r][c];
@@ -216,7 +216,6 @@ function isInCheck(b, side) {
         }
     }
 
-    // 飞将规则：两将同列且中间无子
     const ek = findKing(b, enemy);
     if (ek && king.col === ek.col) {
         let blocked = false;
@@ -230,25 +229,21 @@ function isInCheck(b, side) {
     return false;
 }
 
-// 获取合法走法（排除走完后己方被将军的走法）
 function getLegalMoves(b, row, col) {
     const piece = b[row][col];
     if (!piece) return [];
     const raw = getRawMoves(b, row, col);
     return raw.filter(m => {
-        // 模拟走子
         const saved = b[m.row][m.col];
         b[m.row][m.col] = piece;
         b[row][col] = null;
         const ok = !isInCheck(b, piece.side);
-        // 还原
         b[row][col] = piece;
         b[m.row][m.col] = saved;
         return ok;
     });
 }
 
-// 判断 side 方是否还有合法走法
 function hasAnyLegalMove(b, side) {
     for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 9; c++) {
@@ -261,6 +256,466 @@ function hasAnyLegalMove(b, side) {
     return false;
 }
 
+// ============ AI 引擎 ============
+
+const PIECE_VALUE = {
+    king: 10000, chariot: 900, horse: 400, cannon: 450,
+    elephant: 200, advisor: 200, pawn: 100
+};
+
+// 位置价值表（红方视角，row 0 = 黑方底线，row 9 = 红方底线）
+// 黑方通过翻转获取位置价值
+const POS_VALUE = {
+    pawn: [
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [ 70, 90,110,130,140,130,110, 90, 70],
+        [ 70, 90,110,130,140,130,110, 90, 70],
+        [ 50, 70, 90,110,120,110, 90, 70, 50],
+        [ 40, 50, 70, 90,100, 90, 70, 50, 40],
+        [ 10,  0, 20,  0, 30,  0, 20,  0, 10],
+        [ 10,  0, 20,  0, 30,  0, 20,  0, 10],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+    ],
+    horse: [
+        [  0, -10, 10,  0,  5,  0, 10, -10,  0],
+        [  5,  0, 20, 10, 15, 10, 20,   0,  5],
+        [ 10, 20, 30, 25, 30, 25, 30,  20, 10],
+        [ 15, 25, 35, 40, 45, 40, 35,  25, 15],
+        [ 20, 30, 40, 50, 55, 50, 40,  30, 20],
+        [ 20, 30, 40, 50, 55, 50, 40,  30, 20],
+        [ 15, 25, 35, 40, 45, 40, 35,  25, 15],
+        [ 10, 20, 30, 25, 30, 25, 30,  20, 10],
+        [  5,  0, 20, 10, 15, 10, 20,   0,  5],
+        [  0, -10, 10,  0,  5,  0, 10, -10,  0],
+    ],
+    chariot: [
+        [ 20, 20, 30, 40, 40, 40, 30, 20, 20],
+        [ 20, 30, 40, 50, 50, 50, 40, 30, 20],
+        [ 30, 40, 50, 55, 55, 55, 50, 40, 30],
+        [ 35, 45, 55, 60, 60, 60, 55, 45, 35],
+        [ 40, 50, 60, 65, 65, 65, 60, 50, 40],
+        [ 40, 50, 60, 65, 65, 65, 60, 50, 40],
+        [ 35, 45, 55, 60, 60, 60, 55, 45, 35],
+        [ 30, 40, 50, 55, 55, 55, 50, 40, 30],
+        [ 25, 35, 45, 50, 50, 50, 45, 35, 25],
+        [ 20, 20, 30, 40, 40, 40, 30, 20, 20],
+    ],
+    cannon: [
+        [ 10, 10,  5, 10, 20, 10,  5, 10, 10],
+        [ 10, 15, 15, 20, 25, 20, 15, 15, 10],
+        [ 15, 20, 25, 30, 35, 30, 25, 20, 15],
+        [ 20, 25, 30, 35, 40, 35, 30, 25, 20],
+        [ 25, 30, 35, 40, 45, 40, 35, 30, 25],
+        [ 25, 30, 35, 40, 45, 40, 35, 30, 25],
+        [ 20, 25, 30, 35, 40, 35, 30, 25, 20],
+        [ 15, 20, 25, 30, 35, 30, 25, 20, 15],
+        [ 10, 15, 15, 20, 25, 20, 15, 15, 10],
+        [ 10, 10,  5, 10, 20, 10,  5, 10, 10],
+    ],
+    elephant: [
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [ 20,  0, 20,  0, 20,  0, 20,  0, 20],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [ 20,  0, 20,  0, 20,  0, 20,  0, 20],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [ 20,  0, 20,  0, 20,  0, 20,  0, 20],
+    ],
+    advisor: [
+        [  0,  0,  0, 20,  0, 20,  0,  0,  0],
+        [  0,  0,  0,  0, 25,  0,  0,  0,  0],
+        [  0,  0,  0, 20,  0, 20,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0, 20,  0, 20,  0,  0,  0],
+        [  0,  0,  0,  0, 25,  0,  0,  0,  0],
+        [  0,  0,  0, 20,  0, 20,  0,  0,  0],
+    ],
+    king: [
+        [  0,  0,  0,  5, 15,  5,  0,  0,  0],
+        [  0,  0,  0, 10, 20, 10,  0,  0,  0],
+        [  0,  0,  0, 10, 20, 10,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0,  0,  0,  0,  0,  0,  0],
+        [  0,  0,  0, 10, 20, 10,  0,  0,  0],
+        [  0,  0,  0, 10, 20, 10,  0,  0,  0],
+        [  0,  0,  0,  5, 15,  5,  0,  0,  0],
+    ],
+};
+
+// 获取棋子位置价值（自动处理红黑方翻转）
+function getPosValue(piece, row, col) {
+    const table = POS_VALUE[piece.type];
+    if (!table) return 0;
+    if (piece.side === 'red') return table[row][col];
+    // 黑方翻转：row -> 9-row, col -> 8-col
+    return table[9 - row][8 - col];
+}
+
+// 评估局面（从 side 方视角）
+function evaluateBoard(b, side) {
+    let score = 0;
+    for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 9; c++) {
+            const p = b[r][c];
+            if (!p) continue;
+            const val = PIECE_VALUE[p.type] + getPosValue(p, r, c);
+            if (p.side === side) score += val;
+            else score -= val;
+        }
+    }
+    return score;
+}
+
+// 生成所有合法走法
+function getAllLegalMoves(b, side) {
+    const moves = [];
+    for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 9; c++) {
+            const p = b[r][c];
+            if (p && p.side === side) {
+                const legal = getLegalMoves(b, r, c);
+                legal.forEach(m => {
+                    moves.push({
+                        from: { row: r, col: c },
+                        to: { row: m.row, col: m.col }
+                    });
+                });
+            }
+        }
+    }
+    return moves;
+}
+
+// 走法排序（吃子优先，提高剪枝效率）
+function orderMoves(b, moves) {
+    return moves.map(m => {
+        const target = b[m.to.row][m.to.col];
+        const captureVal = target ? PIECE_VALUE[target.type] : 0;
+        return { move: m, score: captureVal };
+    }).sort((a, b2) => b2.score - a.score).map(x => x.move);
+}
+
+// Minimax + Alpha-Beta 剪枝
+function minimax(b, depth, alpha, beta, maximizing, aiSide) {
+    if (depth === 0) return evaluateBoard(b, aiSide);
+
+    const side = maximizing ? aiSide : (aiSide === 'red' ? 'black' : 'red');
+    const moves = orderMoves(b, getAllLegalMoves(b, side));
+
+    if (moves.length === 0) return maximizing ? -99999 : 99999;
+
+    if (maximizing) {
+        let maxEval = -Infinity;
+        for (const move of moves) {
+            const piece = b[move.from.row][move.from.col];
+            const captured = b[move.to.row][move.to.col];
+            b[move.to.row][move.to.col] = piece;
+            b[move.from.row][move.from.col] = null;
+
+            const evalScore = minimax(b, depth - 1, alpha, beta, false, aiSide);
+
+            b[move.from.row][move.from.col] = piece;
+            b[move.to.row][move.to.col] = captured;
+
+            maxEval = Math.max(maxEval, evalScore);
+            alpha = Math.max(alpha, evalScore);
+            if (beta <= alpha) break;
+        }
+        return maxEval;
+    } else {
+        let minEval = Infinity;
+        for (const move of moves) {
+            const piece = b[move.from.row][move.from.col];
+            const captured = b[move.to.row][move.to.col];
+            b[move.to.row][move.to.col] = piece;
+            b[move.from.row][move.from.col] = null;
+
+            const evalScore = minimax(b, depth - 1, alpha, beta, true, aiSide);
+
+            b[move.from.row][move.from.col] = piece;
+            b[move.to.row][move.to.col] = captured;
+
+            minEval = Math.min(minEval, evalScore);
+            beta = Math.min(beta, evalScore);
+            if (beta <= alpha) break;
+        }
+        return minEval;
+    }
+}
+
+// AI 找最佳走法
+function findBestMove(b, side, depth) {
+    const moves = orderMoves(b, getAllLegalMoves(b, side));
+    if (moves.length === 0) return null;
+
+    // 简单难度：有概率随机走（增加趣味性）
+    if (depth <= 1 && Math.random() < 0.3) {
+        return moves[Math.floor(Math.random() * Math.min(moves.length, 5))];
+    }
+
+    let bestMove = moves[0];
+    let bestScore = -Infinity;
+    const candidates = [];
+
+    for (const move of moves) {
+        const piece = b[move.from.row][move.from.col];
+        const captured = b[move.to.row][move.to.col];
+        b[move.to.row][move.to.col] = piece;
+        b[move.from.row][move.from.col] = null;
+
+        const score = minimax(b, depth - 1, -Infinity, Infinity, false, side);
+
+        b[move.from.row][move.from.col] = piece;
+        b[move.to.row][move.to.col] = captured;
+
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = move;
+            candidates.length = 0;
+            candidates.push(move);
+        } else if (score === bestScore) {
+            candidates.push(move);
+        }
+    }
+
+    // 同分走法中随机选一个
+    return candidates[Math.floor(Math.random() * candidates.length)] || bestMove;
+}
+
+// 调度 AI 走棋（异步，不阻塞 UI）
+function scheduleAI() {
+    if (gameMode !== 'pve' || currentSide !== aiSide || aiThinking) return;
+    aiThinking = true;
+    updateUI();
+
+    setTimeout(() => {
+        const move = findBestMove(board, currentSide, aiDepth);
+        aiThinking = false;
+        if (move) {
+            makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
+        }
+    }, 300);
+}
+
+// ============ 蓝牙对战 ============
+const BluetoothManager = {
+    connected: false,
+    isHost: false,
+    device: null,
+    characteristic: null,
+    server: null,
+
+    isSupported() {
+        return typeof window.bluetoothSerial !== 'undefined' ||
+               (navigator.bluetooth && typeof navigator.bluetooth.requestDevice === 'function');
+    },
+
+    // 创建房间（作为主机）
+    async host() {
+        const btStatus = document.getElementById('btStatus');
+        btStatus.textContent = '正在创建蓝牙服务...';
+        btStatus.className = 'bt-status info';
+
+        if (typeof window.bluetoothSerial !== 'undefined') {
+            // Cordova Bluetooth Serial 插件
+            try {
+                window.bluetoothSerial.enable(
+                    () => {
+                        btStatus.textContent = '蓝牙已开启，等待对手连接...';
+                        btStatus.className = 'bt-status info';
+                        this.listenCordova();
+                    },
+                    (err) => {
+                        btStatus.textContent = '无法开启蓝牙: ' + err;
+                        btStatus.className = 'bt-status error';
+                    }
+                );
+            } catch (e) {
+                btStatus.textContent = '蓝牙初始化失败: ' + e.message;
+                btStatus.className = 'bt-status error';
+            }
+        } else if (navigator.bluetooth) {
+            // Web Bluetooth API — 浏览器中仅支持客户端
+            btStatus.textContent = 'Web Bluetooth 模式下，请让对方设备搜索并连接本机。';
+            btStatus.className = 'bt-status info';
+            this.connected = true;
+            this.isHost = true;
+            bluetoothSide = 'black';
+            this.startGame();
+        } else {
+            btStatus.textContent = '当前环境不支持蓝牙对战，请安装 APK。';
+            btStatus.className = 'bt-status error';
+        }
+    },
+
+    // 加入房间（作为客户端）
+    async join() {
+        const btStatus = document.getElementById('btStatus');
+        btStatus.textContent = '正在搜索设备...';
+        btStatus.className = 'bt-status info';
+
+        if (typeof window.bluetoothSerial !== 'undefined') {
+            // Cordova 插件：列出已配对设备
+            window.bluetoothSerial.list(
+                (devices) => {
+                    const list = document.getElementById('btDeviceList');
+                    list.innerHTML = '';
+                    if (devices.length === 0) {
+                        btStatus.textContent = '未找到已配对设备，请先在系统设置中配对。';
+                        btStatus.className = 'bt-status error';
+                        return;
+                    }
+                    btStatus.textContent = '选择要连接的设备：';
+                    devices.forEach((device) => {
+                        const btn = document.createElement('button');
+                        btn.className = 'bt-device-btn';
+                        btn.textContent = device.name || device.address;
+                        btn.onclick = () => this.connectCordova(device.address);
+                        list.appendChild(btn);
+                    });
+                },
+                (err) => {
+                    btStatus.textContent = '搜索失败: ' + err;
+                    btStatus.className = 'bt-status error';
+                }
+            );
+        } else if (navigator.bluetooth) {
+            // Web Bluetooth API
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true
+                });
+                btStatus.textContent = '正在连接 ' + (device.name || '设备') + '...';
+                this.device = device;
+                this.connected = true;
+                this.isHost = false;
+                bluetoothSide = 'red';
+                this.startGame();
+            } catch (err) {
+                btStatus.textContent = '连接失败: ' + err.message;
+                btStatus.className = 'bt-status error';
+            }
+        } else {
+            btStatus.textContent = '当前环境不支持蓝牙对战，请安装 APK。';
+            btStatus.className = 'bt-status error';
+        }
+    },
+
+    // Cordova 插件连接
+    connectCordova(address) {
+        const btStatus = document.getElementById('btStatus');
+        btStatus.textContent = '正在连接...';
+        window.bluetoothSerial.connect(
+            address,
+            () => {
+                btStatus.textContent = '连接成功！';
+                btStatus.className = 'bt-status success';
+                this.connected = true;
+                this.isHost = false;
+                bluetoothSide = 'red';
+                this.listenCordova();
+                this.startGame();
+            },
+            (err) => {
+                btStatus.textContent = '连接失败: ' + err;
+                btStatus.className = 'bt-status error';
+            }
+        );
+    },
+
+    // 监听 Cordova 蓝牙数据
+    listenCordova() {
+        if (typeof window.bluetoothSerial === 'undefined') return;
+        window.bluetoothSerial.subscribe('\n', (data) => {
+            this.onReceive(data);
+        }, (err) => {
+            console.error('蓝牙订阅失败:', err);
+        });
+    },
+
+    // 发送数据
+    send(data) {
+        const msg = JSON.stringify(data) + '\n';
+        if (typeof window.bluetoothSerial !== 'undefined') {
+            window.bluetoothSerial.write(msg, () => {},
+                (err) => console.error('发送失败:', err));
+        } else if (this.characteristic) {
+            // Web Bluetooth 写入
+            const encoder = new TextEncoder();
+            this.characteristic.writeValue(encoder.encode(msg));
+        }
+    },
+
+    // 接收数据
+    onReceive(data) {
+        try {
+            const msg = JSON.parse(data.trim());
+            switch (msg.type) {
+                case 'move':
+                    // 对方走棋，更新本地棋盘
+                    if (gameMode === 'bluetooth' && currentSide !== bluetoothSide) {
+                        makeMove(msg.from.row, msg.from.col, msg.to.row, msg.to.col, true);
+                    }
+                    break;
+                case 'undo_request':
+                    if (confirm('对方请求悔棋，是否同意？')) {
+                        this.send({ type: 'undo_approve' });
+                        undoMove();
+                    }
+                    break;
+                case 'undo_approve':
+                    undoMove();
+                    break;
+                case 'restart':
+                    if (confirm('对方请求重新开始，是否同意？')) {
+                        resetGame();
+                    }
+                    break;
+                case 'resign':
+                    showModal(bluetoothSide, '对方认输');
+                    break;
+            }
+        } catch (e) {
+            console.error('解析蓝牙数据失败:', e, data);
+        }
+    },
+
+    // 开始蓝牙对战
+    startGame() {
+        gameMode = 'bluetooth';
+        showGameScreen();
+        resetGame();
+        // 主机执黑后手，客户端执红先手
+        if (this.isHost) {
+            bluetoothSide = 'black';
+        } else {
+            bluetoothSide = 'red';
+        }
+        updateModeLabel();
+    },
+
+    // 断开连接
+    disconnect() {
+        if (typeof window.bluetoothSerial !== 'undefined') {
+            window.bluetoothSerial.disconnect(() => {},
+                (err) => console.error('断开失败:', err));
+        }
+        this.connected = false;
+        this.device = null;
+        this.characteristic = null;
+    }
+};
+
 // ============ Canvas 绘制 ============
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -271,10 +726,10 @@ function render() {
     drawBoard();
     drawHighlights();
     drawPieces();
+    if (aiThinking) drawAIThinking();
 }
 
 function drawBoard() {
-    // 木纹底色
     const grad = ctx.createLinearGradient(0, 0, 0, BOARD_H);
     grad.addColorStop(0, '#f5d99a');
     grad.addColorStop(0.5, '#ecd088');
@@ -282,7 +737,6 @@ function drawBoard() {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, BOARD_W, BOARD_H);
 
-    // 木纹纹理（细线）
     ctx.strokeStyle = 'rgba(160, 110, 50, 0.08)';
     ctx.lineWidth = 1;
     for (let i = 0; i < 40; i++) {
@@ -293,11 +747,9 @@ function drawBoard() {
         ctx.stroke();
     }
 
-    // 棋盘线
     ctx.strokeStyle = '#6b4220';
     ctx.lineWidth = 1.5;
 
-    // 横线 10 条
     for (let r = 0; r < 10; r++) {
         const y = OFFSET_Y + r * CELL;
         ctx.beginPath();
@@ -306,35 +758,27 @@ function drawBoard() {
         ctx.stroke();
     }
 
-    // 竖线 9 条（中间在楚河汉界处断开）
     for (let c = 0; c < 9; c++) {
         const x = OFFSET_X + c * CELL;
         ctx.beginPath();
         if (c === 0 || c === 8) {
-            // 边线贯通
             ctx.moveTo(x, OFFSET_Y);
             ctx.lineTo(x, OFFSET_Y + 9 * CELL);
         } else {
-            // 上半
             ctx.moveTo(x, OFFSET_Y);
             ctx.lineTo(x, OFFSET_Y + 4 * CELL);
-            // 下半
             ctx.moveTo(x, OFFSET_Y + 5 * CELL);
             ctx.lineTo(x, OFFSET_Y + 9 * CELL);
         }
         ctx.stroke();
     }
 
-    // 九宫斜线
     ctx.lineWidth = 1.5;
-    // 黑方九宫
     drawDiagonal(3, 0, 5, 2);
     drawDiagonal(5, 0, 3, 2);
-    // 红方九宫
     drawDiagonal(3, 7, 5, 9);
     drawDiagonal(5, 7, 3, 9);
 
-    // 楚河汉界文字
     ctx.fillStyle = '#6b4220';
     ctx.font = 'bold 26px "KaiTi", "STKaiti", serif';
     ctx.textAlign = 'center';
@@ -343,7 +787,6 @@ function drawBoard() {
     ctx.fillText('楚  河', OFFSET_X + 2 * CELL, riverY);
     ctx.fillText('漢  界', OFFSET_X + 6 * CELL, riverY);
 
-    // 兵卒炮位置标记
     drawPositionMarks();
 }
 
@@ -356,16 +799,10 @@ function drawDiagonal(c1, r1, c2, r2) {
     ctx.stroke();
 }
 
-// 画兵线位置的小十字标记
 function drawPositionMarks() {
     const marks = [
-        // 黑炮位
-        [2, 1], [2, 7],
-        // 红炮位
-        [7, 1], [7, 7],
-        // 黑卒位
+        [2, 1], [2, 7], [7, 1], [7, 7],
         [3, 0], [3, 2], [3, 4], [3, 6], [3, 8],
-        // 红兵位
         [6, 0], [6, 2], [6, 4], [6, 6], [6, 8]
     ];
     marks.forEach(([r, c]) => drawCrossMark(r, c));
@@ -376,7 +813,6 @@ function drawCrossMark(row, col) {
     const size = 5, gap = 4;
     ctx.strokeStyle = '#6b4220';
     ctx.lineWidth = 1.2;
-    // 四个角的小折角（边上的只画内侧）
     const corners = [
         { dx: -1, dy: -1, draw: col > 0 },
         { dx:  1, dy: -1, draw: col < 8 },
@@ -399,7 +835,6 @@ function drawCrossMark(row, col) {
 function drawHighlights() {
     if (selected) {
         const { x, y } = posToPixel(selected.row, selected.col);
-        // 选中框
         ctx.strokeStyle = '#e74c3c';
         ctx.lineWidth = 3;
         const s = 24;
@@ -409,14 +844,12 @@ function drawHighlights() {
         const { x, y } = posToPixel(m.row, m.col);
         const target = board[m.row][m.col];
         if (target) {
-            // 可吃子：红圈
             ctx.strokeStyle = 'rgba(231, 76, 60, 0.8)';
             ctx.lineWidth = 3;
             ctx.beginPath();
             ctx.arc(x, y, 25, 0, Math.PI * 2);
             ctx.stroke();
         } else {
-            // 可走点：小圆点
             ctx.fillStyle = 'rgba(39, 174, 96, 0.7)';
             ctx.beginPath();
             ctx.arc(x, y, 7, 0, Math.PI * 2);
@@ -427,15 +860,21 @@ function drawHighlights() {
 
 function drawCorner(x1, y1, x2, y2, len) {
     ctx.beginPath();
-    // 左上
     ctx.moveTo(x1, y1 + len); ctx.lineTo(x1, y1); ctx.lineTo(x1 + len, y1);
-    // 右上
     ctx.moveTo(x2 - len, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + len);
-    // 左下
     ctx.moveTo(x1, y2 - len); ctx.lineTo(x1, y2); ctx.lineTo(x1 + len, y2);
-    // 右下
     ctx.moveTo(x2 - len, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - len);
     ctx.stroke();
+}
+
+function drawAIThinking() {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, BOARD_H / 2 - 25, BOARD_W, 50);
+    ctx.fillStyle = '#f0c040';
+    ctx.font = 'bold 20px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('AI 思考中...', BOARD_W / 2, BOARD_H / 2);
 }
 
 function drawPieces() {
@@ -452,13 +891,11 @@ function drawPiece(row, col, piece) {
     const radius = 24;
     const isRed = piece.side === 'red';
 
-    // 阴影
     ctx.beginPath();
     ctx.arc(x + 2, y + 3, radius, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.fill();
 
-    // 棋子底色（象牙色渐变）
     const bg = ctx.createRadialGradient(x - 6, y - 6, 2, x, y, radius);
     bg.addColorStop(0, '#fff5e0');
     bg.addColorStop(0.7, '#f0ddb0');
@@ -468,19 +905,16 @@ function drawPiece(row, col, piece) {
     ctx.fillStyle = bg;
     ctx.fill();
 
-    // 外圈
     ctx.strokeStyle = isRed ? '#c0392b' : '#1a1a1a';
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // 内圈细线
     ctx.beginPath();
     ctx.arc(x, y, radius - 4, 0, Math.PI * 2);
     ctx.strokeStyle = isRed ? 'rgba(192,57,43,0.4)' : 'rgba(0,0,0,0.3)';
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // 文字
     ctx.fillStyle = isRed ? '#c0392b' : '#1a1a1a';
     ctx.font = 'bold 26px "KaiTi", "STKaiti", "SimSun", serif';
     ctx.textAlign = 'center';
@@ -489,42 +923,64 @@ function drawPiece(row, col, piece) {
 }
 
 // ============ 交互 ============
-canvas.addEventListener('click', (e) => {
+
+// 判断当前是否轮到本地玩家
+function isLocalTurn() {
+    if (gameMode === 'pvp') return true;
+    if (gameMode === 'pve') return currentSide !== aiSide;
+    if (gameMode === 'bluetooth') return currentSide === bluetoothSide;
+    return true;
+}
+
+// 统一处理点击/触摸
+function handlePointer(clientX, clientY) {
+    if (aiThinking) return;
+    if (gameMode === 'pve' && currentSide === aiSide) return;
+    if (gameMode === 'bluetooth' && currentSide !== bluetoothSide) return;
+
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
     const pos = pixelToPos(x, y);
     if (!pos) return;
     handleClick(pos.row, pos.col);
+}
+
+canvas.addEventListener('click', (e) => {
+    handlePointer(e.clientX, e.clientY);
 });
+
+// 触摸支持（移动端）
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (e.touches.length > 0) {
+        handlePointer(e.touches[0].clientX, e.touches[0].clientY);
+    }
+}, { passive: false });
 
 function handleClick(row, col) {
     const piece = board[row][col];
 
     if (selected) {
-        // 点击自己的棋子 → 切换选中
         if (piece && piece.side === currentSide) {
             selected = { row, col };
             validMoves = getLegalMoves(board, row, col);
             render();
             return;
         }
-        // 点击合法走点 → 走子
         const move = validMoves.find(m => m.row === row && m.col === col);
         if (move) {
             makeMove(selected.row, selected.col, row, col);
             return;
         }
-        // 点击空地或敌方棋子（非合法走点）→ 取消选中
         selected = null;
         validMoves = [];
         render();
         return;
     }
 
-    // 未选中 → 选中己方棋子
     if (piece && piece.side === currentSide) {
         selected = { row, col };
         validMoves = getLegalMoves(board, row, col);
@@ -532,12 +988,11 @@ function handleClick(row, col) {
     }
 }
 
-function makeMove(fromR, fromC, toR, toC) {
+function makeMove(fromR, fromC, toR, toC, fromBluetooth) {
     const piece = board[fromR][fromC];
     const target = board[toR][toC];
     const isCapture = !!target;
 
-    // 记录历史（用于悔棋）
     history.push({
         from: { row: fromR, col: fromC },
         to: { row: toR, col: toC },
@@ -546,27 +1001,36 @@ function makeMove(fromR, fromC, toR, toC) {
         side: currentSide
     });
 
-    // 执行走子
     board[toR][toC] = piece;
     board[fromR][fromC] = null;
 
-    // 记录被吃棋子
     if (target) captured[target.side].push(target);
 
-    // 记录棋谱
     addMoveLog(piece, fromR, fromC, toR, toC, isCapture);
 
     selected = null;
     validMoves = [];
 
-    // 切换回合
     currentSide = currentSide === 'red' ? 'black' : 'red';
+
+    // 蓝牙对战：发送走棋数据给对方
+    if (gameMode === 'bluetooth' && !fromBluetooth && BluetoothManager.connected) {
+        BluetoothManager.send({
+            type: 'move',
+            from: { row: fromR, col: fromC },
+            to: { row: toR, col: toC }
+        });
+    }
 
     updateUI();
     render();
 
-    // 判断胜负
     checkGameOver();
+
+    // AI 回合
+    if (gameMode === 'pve' && currentSide === aiSide) {
+        scheduleAI();
+    }
 }
 
 function checkGameOver() {
@@ -578,7 +1042,6 @@ function checkGameOver() {
         const reason = inCheck ? '将死' : '困毙';
         showModal(winner, reason);
     } else if (inCheck) {
-        // 将军提示
         const statusEl = document.getElementById(currentSide + 'Status');
         statusEl.textContent = '被将军！';
         statusEl.style.color = '#ff4444';
@@ -618,10 +1081,23 @@ function updateUI() {
     const blackStatus = document.getElementById('blackStatus');
     redStatus.style.color = '';
     blackStatus.style.color = '';
-    redStatus.textContent = currentSide === 'red' ? '行棋中' : '等待';
-    blackStatus.textContent = currentSide === 'black' ? '行棋中' : '等待';
 
-    // 俘获棋子
+    if (gameMode === 'pve') {
+        if (currentSide === aiSide) {
+            redStatus.textContent = aiSide === 'red' ? (aiThinking ? 'AI思考中...' : 'AI') : '等待';
+            blackStatus.textContent = aiSide === 'black' ? (aiThinking ? 'AI思考中...' : 'AI') : '等待';
+        } else {
+            redStatus.textContent = aiSide === 'red' ? 'AI' : '行棋中';
+            blackStatus.textContent = aiSide === 'black' ? 'AI' : '行棋中';
+        }
+    } else if (gameMode === 'bluetooth') {
+        redStatus.textContent = currentSide === 'red' ? '行棋中' : '等待';
+        blackStatus.textContent = currentSide === 'black' ? '行棋中' : '等待';
+    } else {
+        redStatus.textContent = currentSide === 'red' ? '行棋中' : '等待';
+        blackStatus.textContent = currentSide === 'black' ? '行棋中' : '等待';
+    }
+
     renderCaptured('blackCaptured', captured.black);
     renderCaptured('redCaptured', captured.red);
 }
@@ -637,13 +1113,36 @@ function renderCaptured(elementId, list) {
     });
 }
 
+function updateModeLabel() {
+    const label = document.getElementById('modeLabel');
+    if (gameMode === 'pvp') {
+        label.textContent = '双人对战 · 楚河汉界';
+    } else if (gameMode === 'pve') {
+        const diffName = aiDepth === 1 ? '简单' : aiDepth === 3 ? '中等' : '困难';
+        label.textContent = `人机对战 · ${diffName} · AI执${aiSide === 'red' ? '红' : '黑'}`;
+    } else if (gameMode === 'bluetooth') {
+        label.textContent = `蓝牙对战 · 你执${bluetoothSide === 'red' ? '红' : '黑'}`;
+    }
+}
+
 // ============ 弹窗 ============
 function showModal(winner, reason) {
     const modal = document.getElementById('modal');
     const title = document.getElementById('modalTitle');
     const text = document.getElementById('modalText');
     const winnerName = winner === 'red' ? '红方' : '黑方';
-    title.textContent = winnerName + ' 胜！';
+
+    if (gameMode === 'pve') {
+        const playerSide = aiSide === 'red' ? 'black' : 'red';
+        const playerWin = winner === playerSide;
+        title.textContent = playerWin ? '你赢了！' : 'AI 获胜';
+    } else if (gameMode === 'bluetooth') {
+        const localWin = winner === bluetoothSide;
+        title.textContent = localWin ? '你赢了！' : '对方获胜';
+    } else {
+        title.textContent = winnerName + ' 胜！';
+    }
+
     text.textContent = `${reason} · 棋局结束`;
     modal.classList.add('show');
 }
@@ -654,37 +1153,51 @@ document.getElementById('modalBtn').addEventListener('click', () => {
     resetGame();
 });
 
+// ============ 悔棋 ============
+function undoMove() {
+    if (history.length === 0) return;
+
+    // 人机模式：悔两步（己方+AI）
+    const stepsToUndo = (gameMode === 'pve') ? Math.min(2, history.length) : 1;
+
+    for (let i = 0; i < stepsToUndo; i++) {
+        if (history.length === 0) break;
+        const last = history.pop();
+        board[last.from.row][last.from.col] = last.piece;
+        board[last.to.row][last.to.col] = last.captured;
+        if (last.captured) {
+            const arr = captured[last.captured.side];
+            arr.pop();
+        }
+        currentSide = last.side;
+
+        const log = document.getElementById('moveLog');
+        if (log.lastChild) log.removeChild(log.lastChild);
+    }
+
+    selected = null;
+    validMoves = [];
+    aiThinking = false;
+    document.getElementById('modal').classList.remove('show');
+    updateUI();
+    render();
+}
+
 // ============ 控制按钮 ============
 document.getElementById('restartBtn').addEventListener('click', () => {
     document.getElementById('moveLog').innerHTML = '';
+    if (gameMode === 'bluetooth' && BluetoothManager.connected) {
+        BluetoothManager.send({ type: 'restart' });
+    }
     resetGame();
 });
 
 document.getElementById('undoBtn').addEventListener('click', () => {
-    if (history.length === 0) return;
-    const last = history.pop();
-    // 还原棋子
-    board[last.from.row][last.from.col] = last.piece;
-    board[last.to.row][last.to.col] = last.captured;
-    // 还原俘获
-    if (last.captured) {
-        const arr = captured[last.captured.side];
-        arr.pop();
+    if (gameMode === 'bluetooth' && BluetoothManager.connected) {
+        BluetoothManager.send({ type: 'undo_request' });
+        return;
     }
-    // 切回上一方
-    currentSide = last.side;
-    selected = null;
-    validMoves = [];
-
-    // 移除棋谱最后一条
-    const log = document.getElementById('moveLog');
-    if (log.lastChild) log.removeChild(log.lastChild);
-
-    // 关闭可能存在的将军提示
-    document.getElementById('modal').classList.remove('show');
-
-    updateUI();
-    render();
+    undoMove();
 });
 
 document.getElementById('flipBtn').addEventListener('click', () => {
@@ -692,5 +1205,85 @@ document.getElementById('flipBtn').addEventListener('click', () => {
     render();
 });
 
+document.getElementById('backToMenu').addEventListener('click', () => {
+    if (gameMode === 'bluetooth' && BluetoothManager.connected) {
+        BluetoothManager.disconnect();
+    }
+    showMenuScreen();
+});
+
+// ============ 模式选择 ============
+function showMenuScreen() {
+    document.getElementById('menuScreen').classList.remove('hidden');
+    document.getElementById('difficultyScreen').classList.add('hidden');
+    document.getElementById('bluetoothScreen').classList.add('hidden');
+    document.getElementById('gameApp').classList.add('hidden');
+}
+
+function showGameScreen() {
+    document.getElementById('menuScreen').classList.add('hidden');
+    document.getElementById('difficultyScreen').classList.add('hidden');
+    document.getElementById('bluetoothScreen').classList.add('hidden');
+    document.getElementById('gameApp').classList.remove('hidden');
+}
+
+function showDifficultyScreen() {
+    document.getElementById('menuScreen').classList.add('hidden');
+    document.getElementById('difficultyScreen').classList.remove('hidden');
+}
+
+function showBluetoothScreen() {
+    document.getElementById('menuScreen').classList.add('hidden');
+    document.getElementById('bluetoothScreen').classList.remove('hidden');
+    document.getElementById('btStatus').textContent = '';
+    document.getElementById('btStatus').className = 'bt-status';
+    document.getElementById('btDeviceList').innerHTML = '';
+}
+
+// 双人对战
+document.getElementById('modePvp').addEventListener('click', () => {
+    gameMode = 'pvp';
+    showGameScreen();
+    resetGame();
+    updateModeLabel();
+});
+
+// 人机对战 → 选择难度
+document.getElementById('modePve').addEventListener('click', () => {
+    showDifficultyScreen();
+});
+
+// 难度选择
+document.querySelectorAll('[data-difficulty]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        aiDepth = parseInt(btn.dataset.difficulty);
+        gameMode = 'pve';
+        aiSide = 'black'; // AI 执黑后手
+        showGameScreen();
+        resetGame();
+        updateModeLabel();
+    });
+});
+
+document.getElementById('backFromDifficulty').addEventListener('click', showMenuScreen);
+document.getElementById('backFromBluetooth').addEventListener('click', showMenuScreen);
+
+// 蓝牙对战
+document.getElementById('modeBluetooth').addEventListener('click', () => {
+    if (!BluetoothManager.isSupported()) {
+        alert('当前环境不支持蓝牙对战。\n请下载安装安卓 APK 版本使用蓝牙功能。');
+        return;
+    }
+    showBluetoothScreen();
+});
+
+document.getElementById('btHost').addEventListener('click', () => {
+    BluetoothManager.host();
+});
+
+document.getElementById('btJoin').addEventListener('click', () => {
+    BluetoothManager.join();
+});
+
 // ============ 启动 ============
-resetGame();
+showMenuScreen();
