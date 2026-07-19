@@ -1,6 +1,6 @@
 {
   "name": "xiangqi",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "中国象棋 · 楚河汉界 — 支持人机对战和蓝牙对战的中国象棋游戏",
   "author": "mumujiumu",
   "license": "MIT",
@@ -12,6 +12,7 @@
   "dependencies": {
     "@capacitor/android": "^6.0.0",
     "@capacitor/core": "^6.0.0",
+    "cordova-plugin-android-permissions": "^1.1.5",
     "cordova-plugin-bluetooth-serial": "^0.4.7"
   },
   "devDependencies": {

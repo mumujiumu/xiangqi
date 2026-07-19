@@ -649,9 +649,57 @@ const BluetoothManager = {
                (navigator.bluetooth && typeof navigator.bluetooth.requestDevice === 'function');
     },
 
+    // 请求蓝牙运行时权限（Android 12+ 需要）
+    async requestBluetoothPermissions() {
+        return new Promise((resolve, reject) => {
+            if (typeof window.cordova === 'undefined' || !cordova.plugins || !cordova.plugins.permissions) {
+                // 非 Cordova/Capacitor 环境，直接继续
+                resolve();
+                return;
+            }
+
+            const perms = cordova.plugins.permissions;
+            let permissionsList;
+            if (typeof device !== 'undefined' && device.platform && device.platform.toLowerCase() === 'android' && parseInt(device.version) >= 12) {
+                permissionsList = [
+                    perms.BLUETOOTH_CONNECT,
+                    perms.BLUETOOTH_SCAN,
+                    perms.BLUETOOTH_ADVERTISE
+                ];
+            } else {
+                permissionsList = [
+                    perms.ACCESS_FINE_LOCATION,
+                    perms.BLUETOOTH,
+                    perms.BLUETOOTH_ADMIN
+                ];
+            }
+
+            perms.requestPermissions(permissionsList, (status) => {
+                if (status.hasPermission) {
+                    resolve();
+                } else {
+                    reject(new Error('蓝牙权限被拒绝'));
+                }
+            }, (err) => {
+                reject(new Error('请求蓝牙权限失败: ' + err));
+            });
+        });
+    },
+
     // 创建房间（作为主机）
     async host() {
         const btStatus = document.getElementById('btStatus');
+        btStatus.textContent = '正在请求蓝牙权限...';
+        btStatus.className = 'bt-status info';
+
+        try {
+            await this.requestBluetoothPermissions();
+        } catch (e) {
+            btStatus.textContent = '需要蓝牙权限才能对战: ' + e.message;
+            btStatus.className = 'bt-status error';
+            return;
+        }
+
         btStatus.textContent = '正在创建蓝牙服务...';
         btStatus.className = 'bt-status info';
 
@@ -690,6 +738,17 @@ const BluetoothManager = {
     // 加入房间（作为客户端）
     async join() {
         const btStatus = document.getElementById('btStatus');
+        btStatus.textContent = '正在请求蓝牙权限...';
+        btStatus.className = 'bt-status info';
+
+        try {
+            await this.requestBluetoothPermissions();
+        } catch (e) {
+            btStatus.textContent = '需要蓝牙权限才能对战: ' + e.message;
+            btStatus.className = 'bt-status error';
+            return;
+        }
+
         btStatus.textContent = '正在搜索设备...';
         btStatus.className = 'bt-status info';
 
