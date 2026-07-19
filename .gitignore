@@ -15,5 +15,9 @@ desktop.ini
 *.tmp
 node_modules/
 
+# Electron 打包产物
+release/
+dist/
+
 # WorkBuddy 工作区数据
 .workbuddy/

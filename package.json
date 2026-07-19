@@ -1,0 +1,72 @@
+{
+  "name": "xiangqi",
+  "version": "1.0.0",
+  "description": "中国象棋 · 楚河汉界 — 纯 HTML/CSS/JS 实现的完整中国象棋游戏",
+  "main": "main.js",
+  "author": "mumujiumu",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "build:all": "electron-builder -wml"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.mumujiumu.xiangqi",
+    "productName": "中国象棋",
+    "copyright": "Copyright © 2026 mumujiumu",
+    "files": [
+      "main.js",
+      "index.html",
+      "css/**/*",
+      "js/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "中国象棋-${version}-portable-${arch}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "中国象棋-${version}-setup-${arch}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "中国象棋"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "category": "public.app-category.games",
+      "artifactName": "中国象棋-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Game",
+      "artifactName": "中国象棋-${version}-${arch}.${ext}"
+    },
+    "directories": {
+      "output": "release"
+    }
+  }
+}
