@@ -1,0 +1,301 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", sans-serif;
+    background: linear-gradient(135deg, #2c3e50 0%, #1a1a2e 100%);
+    min-height: 100vh;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+}
+
+.app {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+
+/* 标题 */
+.app-header {
+    text-align: center;
+    color: #f0d090;
+}
+
+.app-header h1 {
+    font-size: 38px;
+    font-weight: 700;
+    letter-spacing: 12px;
+    text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.subtitle {
+    font-size: 14px;
+    color: #c0a060;
+    letter-spacing: 4px;
+    margin-top: 6px;
+}
+
+/* 游戏区域 */
+.game-area {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+}
+
+/* 侧栏 */
+.side-panel {
+    width: 180px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.player-card {
+    background: rgba(255, 255, 255, 0.1);
+    border: 2px solid rgba(255, 255, 255, 0.15);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+    transition: all 0.3s;
+}
+
+.player-card.active {
+    border-color: #f0c040;
+    box-shadow: 0 0 20px rgba(240, 192, 64, 0.4);
+    background: rgba(240, 192, 64, 0.12);
+}
+
+.player-name {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.black-panel .player-name {
+    color: #ddd;
+}
+
+.red-panel .player-name {
+    color: #ff6b4a;
+}
+
+.player-status {
+    font-size: 13px;
+    color: #aaa;
+    margin-top: 4px;
+}
+
+.player-card.active .player-status {
+    color: #f0c040;
+}
+
+/* 俘获区 */
+.captured-area {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 12px;
+    min-height: 80px;
+}
+
+.captured-title {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 8px;
+    letter-spacing: 2px;
+}
+
+.captured-pieces {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 30px;
+}
+
+.captured-pieces .mini-piece {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.captured-pieces .mini-piece.red {
+    background: #f5e6d3;
+    color: #c0392b;
+    border: 1.5px solid #c0392b;
+}
+
+.captured-pieces .mini-piece.black {
+    background: #f5e6d3;
+    color: #1a1a1a;
+    border: 1.5px solid #1a1a1a;
+}
+
+/* 控制按钮 */
+.controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.btn {
+    padding: 10px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #ddd;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+
+.btn:hover {
+    background: rgba(255, 255, 255, 0.18);
+    transform: translateY(-1px);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #c0392b, #e74c3c);
+    border-color: #c0392b;
+    color: #fff;
+    font-weight: 600;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #d04030, #f55a4a);
+}
+
+/* 棋谱 */
+.move-log {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 12px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.log-title {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 8px;
+    letter-spacing: 2px;
+}
+
+.log-list {
+    list-style: none;
+    counter-reset: step;
+}
+
+.log-list li {
+    counter-increment: step;
+    font-size: 13px;
+    color: #ccc;
+    padding: 3px 0;
+    line-height: 1.5;
+}
+
+.log-list li::before {
+    content: counter(step) ". ";
+    color: #888;
+}
+
+.log-list li.red-move {
+    color: #ff8870;
+}
+
+.log-list li.black-move {
+    color: #b0b0b0;
+}
+
+/* 棋盘 */
+.board-wrapper {
+    background: #e8c887;
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+#board {
+    display: block;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+/* 弹窗 */
+.modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+.modal.show {
+    display: flex;
+    animation: fadeIn 0.3s;
+}
+
+.modal-content {
+    background: linear-gradient(135deg, #3a2a1a, #2c3e50);
+    border: 2px solid #f0c040;
+    border-radius: 16px;
+    padding: 40px 50px;
+    text-align: center;
+    box-shadow: 0 0 50px rgba(240, 192, 64, 0.3);
+}
+
+.modal-content h2 {
+    color: #f0c040;
+    font-size: 32px;
+    margin-bottom: 12px;
+}
+
+.modal-content p {
+    color: #ddd;
+    font-size: 18px;
+    margin-bottom: 24px;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* 响应式 */
+@media (max-width: 1000px) {
+    .game-area {
+        flex-direction: column;
+        align-items: center;
+    }
+    .side-panel {
+        width: 540px;
+        max-width: 100%;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+    .player-card {
+        flex: 1;
+        min-width: 140px;
+    }
+    .captured-area {
+        flex: 1;
+        min-width: 140px;
+    }
+}

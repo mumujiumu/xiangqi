@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>中国象棋 · 楚河汉界</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app">
+        <header class="app-header">
+            <h1>中 国 象 棋</h1>
+            <p class="subtitle">楚河汉界 · 见招拆招</p>
+        </header>
+
+        <main class="game-area">
+            <!-- 左侧：黑方信息 -->
+            <aside class="side-panel black-panel">
+                <div class="player-card" id="blackCard">
+                    <div class="player-name">黑方</div>
+                    <div class="player-status" id="blackStatus">等待</div>
+                </div>
+                <div class="captured-area">
+                    <div class="captured-title">红方俘获</div>
+                    <div class="captured-pieces" id="blackCaptured"></div>
+                </div>
+            </aside>
+
+            <!-- 中间：棋盘 -->
+            <div class="board-wrapper">
+                <canvas id="board" width="540" height="600"></canvas>
+            </div>
+
+            <!-- 右侧：红方信息 + 控制 -->
+            <aside class="side-panel red-panel">
+                <div class="player-card active" id="redCard">
+                    <div class="player-name">红方</div>
+                    <div class="player-status" id="redStatus">行棋中</div>
+                </div>
+                <div class="captured-area">
+                    <div class="captured-title">黑方俘获</div>
+                    <div class="captured-pieces" id="redCaptured"></div>
+                </div>
+                <div class="controls">
+                    <button class="btn btn-primary" id="restartBtn">重新开始</button>
+                    <button class="btn" id="undoBtn">悔棋</button>
+                    <button class="btn" id="flipBtn">翻转棋盘</button>
+                </div>
+                <div class="move-log">
+                    <div class="log-title">棋谱</div>
+                    <ol class="log-list" id="moveLog"></ol>
+                </div>
+            </aside>
+        </main>
+
+        <!-- 胜负弹窗 -->
+        <div class="modal" id="modal">
+            <div class="modal-content">
+                <h2 id="modalTitle">胜负已分</h2>
+                <p id="modalText"></p>
+                <button class="btn btn-primary" id="modalBtn">再来一局</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/game.js"></script>
+</body>
+</html>
