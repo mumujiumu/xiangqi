@@ -540,8 +540,23 @@ function startAIThinkAnim() {
 const SPEECH_LANG = 'zh-CN';
 let speechVoice = null;
 
-// 初始化语音（加载中文女声）
+// 是否运行在 Capacitor 原生环境（Android WebView 的 speechSynthesis 不可用，需走原生 TTS）
+function isNativePlatform() {
+    return typeof window.Capacitor !== 'undefined'
+        && typeof window.Capacitor.isNativePlatform === 'function'
+        && window.Capacitor.isNativePlatform();
+}
+
+// 获取原生 TTS 插件代理（@capacitor-community/text-to-speech）
+function getNativeTTS() {
+    if (!isNativePlatform()) return null;
+    const plugins = window.Capacitor.Plugins || {};
+    return plugins.TextToSpeech || null;
+}
+
+// 初始化语音
 function initSpeech() {
+    if (getNativeTTS()) return;  // 原生环境走系统 TTS，无需加载 Web 语音
     if (!('speechSynthesis' in window)) return;
     const loadVoice = () => {
         const voices = window.speechSynthesis.getVoices();
@@ -553,6 +568,49 @@ function initSpeech() {
     loadVoice();
     if (window.speechSynthesis.onvoiceschanged !== undefined) {
         window.speechSynthesis.onvoiceschanged = loadVoice;
+    }
+}
+
+// 统一语音播报：原生端走系统 TTS，Web 端走 speechSynthesis
+async function speakText(text, opts) {
+    if (!soundEnabled) return;
+    opts = opts || {};
+    const tts = getNativeTTS();
+    if (tts && tts.speak) {
+        try {
+            try { await tts.stop(); } catch (e) { /* 忽略 */ }
+            await tts.speak({
+                text: text,
+                lang: SPEECH_LANG,
+                rate: opts.rate != null ? opts.rate : 0.95,
+                pitch: opts.pitch != null ? opts.pitch : 1.0,
+                volume: 1.0
+            });
+        } catch (e) {
+            console.warn('原生 TTS 失败', e);
+        }
+        return;
+    }
+    // Web 降级
+    if (!('speechSynthesis' in window)) return;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = SPEECH_LANG;
+    utter.rate = opts.rate != null ? opts.rate : 0.95;
+    utter.pitch = opts.pitch != null ? opts.pitch : 1.0;
+    utter.volume = 1.0;
+    if (speechVoice) utter.voice = speechVoice;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+}
+
+// 停止所有语音（静音切换 / 退出时调用）
+function stopAllSpeech() {
+    const tts = getNativeTTS();
+    if (tts && tts.stop) {
+        try { tts.stop(); } catch (e) { /* 忽略 */ }
+    }
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
     }
 }
 
@@ -582,27 +640,15 @@ function moveText(piece, fromR, fromC, toR, toC, isCapture) {
 
 // 播报走棋
 function speakMove(piece, fromR, fromC, toR, toC, isCapture) {
-    if (!soundEnabled || !('speechSynthesis' in window)) return;
+    if (!soundEnabled) return;
     const text = moveText(piece, fromR, fromC, toR, toC, isCapture);
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = SPEECH_LANG;
-    utter.rate = 0.95;
-    utter.pitch = 1.0;
-    utter.volume = 1.0;
-    if (speechVoice) utter.voice = speechVoice;
-    window.speechSynthesis.cancel();  // 取消上一句
-    window.speechSynthesis.speak(utter);
+    speakText(text, { rate: 0.95 });
 }
 
 // 播报简短提示
 function speak(text) {
-    if (!soundEnabled || !('speechSynthesis' in window)) return;
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = SPEECH_LANG;
-    utter.rate = 1.0;
-    if (speechVoice) utter.voice = speechVoice;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utter);
+    if (!soundEnabled) return;
+    speakText(text, { rate: 1.0 });
 }
 
 // ============ 棋子移动动画 ============
@@ -1450,8 +1496,8 @@ document.getElementById('soundBtn').addEventListener('click', () => {
     soundEnabled = !soundEnabled;
     const btn = document.getElementById('soundBtn');
     btn.textContent = soundEnabled ? '🔊 语音开' : '🔇 语音关';
-    if (!soundEnabled && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
+    if (!soundEnabled) {
+        stopAllSpeech();
     }
 });
 
