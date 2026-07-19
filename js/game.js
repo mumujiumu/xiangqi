@@ -39,6 +39,13 @@ let aiDepth = 3;        // AI 搜索深度
 let aiThinking = false;
 let bluetoothSide = 'red'; // 蓝牙模式中本地玩家执方
 
+// 动画状态
+let animating = false;
+let animState = null;  // { piece, fromR, fromC, toR, toC, startTime, duration, captured }
+
+// 语音播报（静音开关）
+let soundEnabled = true;
+
 function resetGame() {
     board = createInitialBoard();
     currentSide = 'red';
@@ -497,14 +504,136 @@ function scheduleAI() {
     if (gameMode !== 'pve' || currentSide !== aiSide || aiThinking) return;
     aiThinking = true;
     updateUI();
+    startAIThinkAnim();
+
+    // 根据难度决定思考延时（毫秒）
+    const thinkTime = aiDepth <= 1 ? (600 + Math.random() * 400)
+                    : aiDepth === 3 ? (900 + Math.random() * 600)
+                    : (1200 + Math.random() * 800);
 
     setTimeout(() => {
         const move = findBestMove(board, currentSide, aiDepth);
         aiThinking = false;
         if (move) {
             makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
+        } else {
+            updateUI();
+            render();
         }
-    }, 300);
+    }, thinkTime);
+}
+
+// AI 思考时的动画循环（跳动省略号）
+let aiAnimRunning = false;
+function startAIThinkAnim() {
+    if (aiAnimRunning) return;
+    aiAnimRunning = true;
+    function loop() {
+        if (!aiThinking) { aiAnimRunning = false; render(); return; }
+        render();
+        requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+}
+
+// ============ 语音播报 ============
+const SPEECH_LANG = 'zh-CN';
+let speechVoice = null;
+
+// 初始化语音（加载中文女声）
+function initSpeech() {
+    if (!('speechSynthesis' in window)) return;
+    const loadVoice = () => {
+        const voices = window.speechSynthesis.getVoices();
+        speechVoice = voices.find(v => v.lang === SPEECH_LANG && /female|女/i.test(v.name))
+                   || voices.find(v => v.lang === SPEECH_LANG)
+                   || voices.find(v => v.lang.startsWith('zh'))
+                   || null;
+    };
+    loadVoice();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+        window.speechSynthesis.onvoiceschanged = loadVoice;
+    }
+}
+
+// 中文数字
+const CN_NUMS = ['一','二','三','四','五','六','七','八','九'];
+
+// 生成走棋语音文本，如 "红方 车二平五"、"黑方 马八进七"、"红方 炮二进五 吃"
+function moveText(piece, fromR, fromC, toR, toC, isCapture) {
+    const char = PIECE_CHAR[piece.side][piece.type];
+    const sideName = piece.side === 'red' ? '红方' : '黑方';
+    const fromCol = piece.side === 'red' ? CN_NUMS[8 - fromC] : (fromC + 1);
+    const toCol = piece.side === 'red' ? CN_NUMS[8 - toC] : (toC + 1);
+
+    let action;
+    if (fromR === toR) {
+        action = '平' + toCol;
+    } else {
+        const forward = piece.side === 'red' ? fromR > toR : fromR < toR;
+        const steps = Math.abs(fromR - toR);
+        const stepStr = piece.side === 'red' ? CN_NUMS[steps - 1] : steps;
+        const isDiagonal = ['horse','elephant','advisor','king'].includes(piece.type);
+        const target = isCapture || isDiagonal ? toCol : stepStr;
+        action = forward ? '进' + target : '退' + target;
+    }
+    return `${sideName} ${char}${fromCol}${action}` + (isCapture ? '，吃' : '');
+}
+
+// 播报走棋
+function speakMove(piece, fromR, fromC, toR, toC, isCapture) {
+    if (!soundEnabled || !('speechSynthesis' in window)) return;
+    const text = moveText(piece, fromR, fromC, toR, toC, isCapture);
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = SPEECH_LANG;
+    utter.rate = 0.95;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
+    if (speechVoice) utter.voice = speechVoice;
+    window.speechSynthesis.cancel();  // 取消上一句
+    window.speechSynthesis.speak(utter);
+}
+
+// 播报简短提示
+function speak(text) {
+    if (!soundEnabled || !('speechSynthesis' in window)) return;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = SPEECH_LANG;
+    utter.rate = 1.0;
+    if (speechVoice) utter.voice = speechVoice;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+}
+
+// ============ 棋子移动动画 ============
+const ANIM_DURATION = 350;  // 每步走棋动画时长（毫秒）
+
+// 启动移动动画，动画结束后回调 onDone
+function startMoveAnim(piece, fromR, fromC, toR, toC, captured, onDone) {
+    animating = true;
+    animState = {
+        piece, fromR, fromC, toR, toC, captured,
+        startTime: performance.now(),
+        duration: ANIM_DURATION
+    };
+
+    function frame(now) {
+        const t = Math.min(1, (now - animState.startTime) / animState.duration);
+        // 缓动函数（ease-out）
+        const eased = 1 - Math.pow(1 - t, 3);
+        animState.progress = eased;
+        render();
+
+        if (t < 1) {
+            requestAnimationFrame(frame);
+        } else {
+            animating = false;
+            animState = null;
+            render();
+            if (onDone) onDone();
+        }
+    }
+    requestAnimationFrame(frame);
 }
 
 // ============ 蓝牙对战 ============
@@ -868,27 +997,59 @@ function drawCorner(x1, y1, x2, y2, len) {
 }
 
 function drawAIThinking() {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(0, BOARD_H / 2 - 25, BOARD_W, 50);
+    // 半透明背景条
+    const barH = 56;
+    const barY = BOARD_H / 2 - barH / 2;
+    ctx.fillStyle = 'rgba(20, 20, 30, 0.82)';
+    ctx.fillRect(0, barY, BOARD_W, barH);
+
+    // 左侧跳动圆点
+    const t = (performance.now() / 200) % 3;
+    for (let i = 0; i < 3; i++) {
+        const cx = BOARD_W / 2 - 70 + i * 16;
+        const bounce = t > i && t < i + 1 ? Math.sin((t - i) * Math.PI) * 6 : 0;
+        ctx.beginPath();
+        ctx.arc(cx, BOARD_H / 2 + bounce, 5, 0, Math.PI * 2);
+        ctx.fillStyle = i === Math.floor(t) ? '#f0c040' : 'rgba(240,192,64,0.4)';
+        ctx.fill();
+    }
+
+    // 文字
     ctx.fillStyle = '#f0c040';
     ctx.font = 'bold 20px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
+    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText('AI 思考中...', BOARD_W / 2, BOARD_H / 2);
+    ctx.fillText('AI 思考中', BOARD_W / 2 - 20, BOARD_H / 2);
 }
 
 function drawPieces() {
     for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 9; c++) {
             const p = board[r][c];
-            if (p) drawPiece(r, c, p);
+            if (!p) continue;
+            // 动画中：跳过起点位置的棋子（它会画在动画路径上）
+            if (animating && animState && r === animState.fromR && c === animState.fromC) continue;
+            drawPiece(r, c, p);
         }
+    }
+    // 绘制动画中的棋子
+    if (animating && animState) {
+        const { piece, fromR, fromC, toR, toC, progress } = animState;
+        const from = posToPixel(fromR, fromC);
+        const to = posToPixel(toR, toC);
+        const x = from.x + (to.x - from.x) * progress;
+        const y = from.y + (to.y - from.y) * progress;
+        drawPieceAt(piece, x, y, 1 + 0.08 * Math.sin(progress * Math.PI));
     }
 }
 
 function drawPiece(row, col, piece) {
     const { x, y } = posToPixel(row, col);
-    const radius = 24;
+    drawPieceAt(piece, x, y, 1);
+}
+
+function drawPieceAt(piece, x, y, scale) {
+    const radius = 24 * scale;
     const isRed = piece.side === 'red';
 
     ctx.beginPath();
@@ -916,7 +1077,7 @@ function drawPiece(row, col, piece) {
     ctx.stroke();
 
     ctx.fillStyle = isRed ? '#c0392b' : '#1a1a1a';
-    ctx.font = 'bold 26px "KaiTi", "STKaiti", "SimSun", serif';
+    ctx.font = `bold ${Math.round(26 * scale)}px "KaiTi", "STKaiti", "SimSun", serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(PIECE_CHAR[piece.side][piece.type], x, y + 1);
@@ -935,6 +1096,7 @@ function isLocalTurn() {
 // 统一处理点击/触摸
 function handlePointer(clientX, clientY) {
     if (aiThinking) return;
+    if (animating) return;
     if (gameMode === 'pve' && currentSide === aiSide) return;
     if (gameMode === 'bluetooth' && currentSide !== bluetoothSide) return;
 
@@ -989,31 +1151,17 @@ function handleClick(row, col) {
 }
 
 function makeMove(fromR, fromC, toR, toC, fromBluetooth) {
+    if (animating) return;  // 动画中忽略
     const piece = board[fromR][fromC];
+    if (!piece) return;
     const target = board[toR][toC];
     const isCapture = !!target;
 
-    history.push({
-        from: { row: fromR, col: fromC },
-        to: { row: toR, col: toC },
-        piece: { ...piece },
-        captured: target ? { ...target } : null,
-        side: currentSide
-    });
-
-    board[toR][toC] = piece;
-    board[fromR][fromC] = null;
-
-    if (target) captured[target.side].push(target);
-
-    addMoveLog(piece, fromR, fromC, toR, toC, isCapture);
-
     selected = null;
     validMoves = [];
+    render();
 
-    currentSide = currentSide === 'red' ? 'black' : 'red';
-
-    // 蓝牙对战：发送走棋数据给对方
+    // 蓝牙对战：立即发送走棋数据给对方
     if (gameMode === 'bluetooth' && !fromBluetooth && BluetoothManager.connected) {
         BluetoothManager.send({
             type: 'move',
@@ -1022,15 +1170,37 @@ function makeMove(fromR, fromC, toR, toC, fromBluetooth) {
         });
     }
 
-    updateUI();
-    render();
+    // 启动移动动画，动画结束后更新棋盘状态
+    startMoveAnim(piece, fromR, fromC, toR, toC, target, () => {
+        history.push({
+            from: { row: fromR, col: fromC },
+            to: { row: toR, col: toC },
+            piece: { ...piece },
+            captured: target ? { ...target } : null,
+            side: currentSide
+        });
 
-    checkGameOver();
+        board[toR][toC] = piece;
+        board[fromR][fromC] = null;
+        if (target) captured[target.side].push(target);
 
-    // AI 回合
-    if (gameMode === 'pve' && currentSide === aiSide) {
-        scheduleAI();
-    }
+        addMoveLog(piece, fromR, fromC, toR, toC, isCapture);
+
+        // 语音播报走棋
+        speakMove(piece, fromR, fromC, toR, toC, isCapture);
+
+        currentSide = currentSide === 'red' ? 'black' : 'red';
+
+        updateUI();
+        render();
+
+        const gameOver = checkGameOver();
+
+        // AI 回合
+        if (!gameOver && gameMode === 'pve' && currentSide === aiSide) {
+            scheduleAI();
+        }
+    });
 }
 
 function checkGameOver() {
@@ -1040,12 +1210,24 @@ function checkGameOver() {
     if (!hasMove) {
         const winner = currentSide === 'red' ? 'black' : 'red';
         const reason = inCheck ? '将死' : '困毙';
+        // 语音播报游戏结束
+        if (gameMode === 'pve') {
+            const playerSide = aiSide === 'red' ? 'black' : 'red';
+            const playerWin = winner === playerSide;
+            speak(playerWin ? '恭喜你赢了' : 'AI获胜，再接再厉');
+        } else {
+            const winnerName = winner === 'red' ? '红方' : '黑方';
+            speak(`${winnerName} ${reason}，游戏结束`);
+        }
         showModal(winner, reason);
+        return true;
     } else if (inCheck) {
         const statusEl = document.getElementById(currentSide + 'Status');
         statusEl.textContent = '被将军！';
         statusEl.style.color = '#ff4444';
+        speak('将军');
     }
+    return false;
 }
 
 // ============ 棋谱记录 ============
@@ -1205,6 +1387,15 @@ document.getElementById('flipBtn').addEventListener('click', () => {
     render();
 });
 
+document.getElementById('soundBtn').addEventListener('click', () => {
+    soundEnabled = !soundEnabled;
+    const btn = document.getElementById('soundBtn');
+    btn.textContent = soundEnabled ? '🔊 语音开' : '🔇 语音关';
+    if (!soundEnabled && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+    }
+});
+
 document.getElementById('backToMenu').addEventListener('click', () => {
     if (gameMode === 'bluetooth' && BluetoothManager.connected) {
         BluetoothManager.disconnect();
@@ -1286,4 +1477,5 @@ document.getElementById('btJoin').addEventListener('click', () => {
 });
 
 // ============ 启动 ============
+initSpeech();
 showMenuScreen();
