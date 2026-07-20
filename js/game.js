@@ -6,6 +6,21 @@
  * 游戏模式：pvp（双人）、pve（人机）、bluetooth（蓝牙）
  */
 
+// ============ 全局错误兜底 ============
+// 防止未捕获异常导致白屏 / 卡死，出错时尽量保持游戏可继续
+window.addEventListener('error', (e) => {
+    console.warn('全局异常已拦截:', e.message || e.error);
+    // 尝试恢复 UI 状态
+    if (typeof aiThinking !== 'undefined' && aiThinking) {
+        aiThinking = false;
+        try { updateUI(); render(); } catch (_) {}
+    }
+});
+window.addEventListener('unhandledrejection', (e) => {
+    console.warn('未处理的 Promise 异常已拦截:', e.reason);
+    e.preventDefault && e.preventDefault();
+});
+
 // ============ 棋子定义 ============
 const PIECE_CHAR = {
     red:   { king: '帥', advisor: '仕', elephant: '相', horse: '馬', chariot: '車', cannon: '炮', pawn: '兵' },
@@ -35,7 +50,7 @@ let flipped = false;
 // 模式管理
 let gameMode = 'pvp';   // 'pvp' | 'pve' | 'bluetooth'
 let aiSide = 'black';   // AI 执黑
-let aiDepth = 3;        // AI 搜索深度
+let aiDepth = 2;        // AI 搜索深度（1=简单 2=中等 3=困难，按手机性能调优）
 let aiThinking = false;
 let bluetoothSide = 'red'; // 蓝牙模式中本地玩家执方
 
@@ -500,56 +515,13 @@ function findBestMove(b, side, depth) {
     return candidates[Math.floor(Math.random() * candidates.length)] || bestMove;
 }
 
-// AI Worker：在独立线程跑 Minimax 搜索，避免阻塞主线程导致卡顿 / ANR 闪退
-let aiWorker = null;
+// AI 调度：主线程同步计算 + 短延迟让 UI 先刷新思考动画
+// 搜索深度已按手机性能调优（困难=3, 中等=2, 简单=1），配合思考延时不会触发 ANR
 let aiTaskId = 0;      // 每次调度递增，用于丢弃过期计算结果（重开 / 换边后旧结果作废）
 let aiStartTime = 0;   // 本轮思考开始时间
 let aiThinkTime = 0;   // 本轮最低思考时长（保持节奏感，避免秒走）
 
-function getAIWorker() {
-    if (aiWorker) return aiWorker;
-    if (typeof Worker === 'undefined') return null;  // 环境不支持 Worker
-    try {
-        aiWorker = new Worker('js/ai-worker.js');
-        aiWorker.onmessage = (e) => {
-            const data = e.data || {};
-            const move = data.move, taskId = data.taskId, error = data.error;
-            // 过期结果（用户已重开 / 换边）直接丢弃
-            if (taskId !== aiTaskId) return;
-            if (error) console.warn('AI worker error:', error);
-
-            const finish = () => {
-                aiThinking = false;
-                if (move) {
-                    makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
-                } else {
-                    updateUI();
-                    render();
-                }
-            };
-
-            // 保持思考节奏：计算快时补足 thinkTime，计算慢时立即执行（此时主线程一直流畅）
-            const elapsed = performance.now() - aiStartTime;
-            const remain = aiThinkTime - elapsed;
-            if (remain > 10) {
-                setTimeout(finish, remain);
-            } else {
-                finish();
-            }
-        };
-        aiWorker.onerror = (e) => {
-            console.warn('AI worker 加载失败，降级到主线程计算', e);
-            aiWorker = null;
-        };
-        return aiWorker;
-    } catch (e) {
-        console.warn('AI worker 初始化失败，降级到主线程计算', e);
-        aiWorker = null;
-        return null;
-    }
-}
-
-// 调度 AI 走棋（异步，不阻塞 UI）
+// 调度 AI 走棋（异步 setTimeout，让 UI 先刷新出思考动画再开始计算）
 function scheduleAI() {
     if (gameMode !== 'pve' || currentSide !== aiSide || aiThinking) return;
     aiThinking = true;
@@ -558,38 +530,30 @@ function scheduleAI() {
 
     // 根据难度决定最低思考时长（毫秒）——保持节奏感，避免秒走
     aiThinkTime = aiDepth <= 1 ? (600 + Math.random() * 400)
-                : aiDepth === 3 ? (900 + Math.random() * 600)
+                : aiDepth === 2 ? (900 + Math.random() * 600)
                 : (1200 + Math.random() * 800);
     aiStartTime = performance.now();
     aiTaskId++;
     const myTaskId = aiTaskId;
 
-    const worker = getAIWorker();
-    if (worker) {
-        // Worker 可用：后台计算，主线程零阻塞
-        // 棋盘通过结构化克隆传给 worker，worker 内改动不影响主线程
-        worker.postMessage({ board: board, side: currentSide, depth: aiDepth, taskId: myTaskId });
-    } else {
-        // 降级：Worker 不可用时在主线程同步计算
-        // 限制实际搜索深度避免长时间阻塞（困难最多用 3，中等用 2）
-        const fallbackDepth = aiDepth >= 4 ? 3 : Math.min(aiDepth, 2);
-        setTimeout(() => {
-            if (myTaskId !== aiTaskId) return;  // 已过期
-            const move = findBestMove(board, currentSide, fallbackDepth);
-            const elapsed = performance.now() - aiStartTime;
-            const remain = aiThinkTime - elapsed;
-            const finish = () => {
-                aiThinking = false;
-                if (move) {
-                    makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
-                } else {
-                    updateUI();
-                    render();
-                }
-            };
-            if (remain > 10) setTimeout(finish, remain); else finish();
-        }, 50);  // 短延迟让 UI 先刷新出思考动画
-    }
+    // 短延迟让思考动画先渲染出来，再开始 CPU 密集计算
+    setTimeout(() => {
+        if (myTaskId !== aiTaskId) return;  // 已过期（用户重开 / 换边）
+        const move = findBestMove(board, currentSide, aiDepth);
+        const elapsed = performance.now() - aiStartTime;
+        const remain = aiThinkTime - elapsed;
+        const finish = () => {
+            aiThinking = false;
+            if (myTaskId !== aiTaskId) return;  // 再次检查过期
+            if (move) {
+                makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
+            } else {
+                updateUI();
+                render();
+            }
+        };
+        if (remain > 10) setTimeout(finish, remain); else finish();
+    }, 60);
 }
 
 // AI 思考时的动画循环（跳动省略号）
@@ -641,13 +605,23 @@ function initSpeech() {
 }
 
 // 统一语音播报：原生端走系统 TTS，Web 端走 speechSynthesis
+// 防护：节流防并发 + 失败计数自动禁用，避免 native TTS 崩溃拖垮整个进程
+let ttsAvailable = null;    // null=未检测, true=可用, false=已禁用（连续失败后永久关闭）
+let ttsFailCount = 0;
+let lastSpeakTime = 0;
+
 async function speakText(text, opts) {
     if (!soundEnabled) return;
     opts = opts || {};
     const tts = getNativeTTS();
     if (tts && tts.speak) {
+        if (ttsAvailable === false) return;  // 已禁用，不再触发 native 调用
+        // 节流：两次 TTS 调用至少间隔 350ms，防止 native 层并发初始化崩溃
+        const now = Date.now();
+        if (now - lastSpeakTime < 350) return;
+        lastSpeakTime = now;
         try {
-            try { await tts.stop(); } catch (e) { /* 忽略 */ }
+            try { await tts.stop(); } catch (e) { /* 忽略 stop 失败 */ }
             await tts.speak({
                 text: text,
                 lang: SPEECH_LANG,
@@ -655,8 +629,16 @@ async function speakText(text, opts) {
                 pitch: opts.pitch != null ? opts.pitch : 1.0,
                 volume: 1.0
             });
+            ttsAvailable = true;
+            ttsFailCount = 0;
         } catch (e) {
-            console.warn('原生 TTS 失败', e);
+            ttsFailCount++;
+            console.warn('原生 TTS 失败(' + ttsFailCount + ')', e);
+            // 连续失败 2 次永久禁用，避免反复触发 native 崩溃
+            if (ttsFailCount >= 2) {
+                ttsAvailable = false;
+                console.warn('原生 TTS 已自动禁用，后续走静音模式');
+            }
         }
         return;
     }
@@ -675,11 +657,11 @@ async function speakText(text, opts) {
 // 停止所有语音（静音切换 / 退出时调用）
 function stopAllSpeech() {
     const tts = getNativeTTS();
-    if (tts && tts.stop) {
+    if (tts && tts.stop && ttsAvailable !== false) {
         try { tts.stop(); } catch (e) { /* 忽略 */ }
     }
     if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
+        try { window.speechSynthesis.cancel(); } catch (e) { /* 忽略 */ }
     }
 }
 
@@ -1456,7 +1438,7 @@ function updateModeLabel() {
     if (gameMode === 'pvp') {
         label.textContent = '双人对战 · 楚河汉界';
     } else if (gameMode === 'pve') {
-        const diffName = aiDepth === 1 ? '简单' : aiDepth === 3 ? '中等' : '困难';
+        const diffName = aiDepth === 1 ? '简单' : aiDepth === 2 ? '中等' : '困难';
         label.textContent = `人机对战 · ${diffName} · AI执${aiSide === 'red' ? '红' : '黑'}`;
     } else if (gameMode === 'bluetooth') {
         label.textContent = `蓝牙对战 · 你执${bluetoothSide === 'red' ? '红' : '黑'}`;
