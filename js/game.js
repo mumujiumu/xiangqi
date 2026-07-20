@@ -696,40 +696,12 @@ const BluetoothManager = {
     },
 
     // 请求蓝牙运行时权限（Android 12+ 需要）
+    // 注意：cordova-plugin-android-permissions 对 Android 12+ 引入的 BLUETOOTH_CONNECT/SCAN
+    // 等新运行时权限支持不完善，会误报"权限被拒绝"。native 端 MainActivity.java
+    // 已在 onCreate 时主动请求了这些权限，JS 端直接通过；如实际蓝牙调用失败会在
+    // bluetoothSerial.enable 的错误回调中给出"去系统设置"的引导。
     async requestBluetoothPermissions() {
-        return new Promise((resolve, reject) => {
-            if (typeof window.cordova === 'undefined' || !cordova.plugins || !cordova.plugins.permissions) {
-                // 非 Cordova/Capacitor 环境，直接继续
-                resolve();
-                return;
-            }
-
-            const perms = cordova.plugins.permissions;
-            let permissionsList;
-            if (typeof device !== 'undefined' && device.platform && device.platform.toLowerCase() === 'android' && parseInt(device.version) >= 12) {
-                permissionsList = [
-                    perms.BLUETOOTH_CONNECT,
-                    perms.BLUETOOTH_SCAN,
-                    perms.BLUETOOTH_ADVERTISE
-                ];
-            } else {
-                permissionsList = [
-                    perms.ACCESS_FINE_LOCATION,
-                    perms.BLUETOOTH,
-                    perms.BLUETOOTH_ADMIN
-                ];
-            }
-
-            perms.requestPermissions(permissionsList, (status) => {
-                if (status.hasPermission) {
-                    resolve();
-                } else {
-                    reject(new Error('蓝牙权限被拒绝'));
-                }
-            }, (err) => {
-                reject(new Error('请求蓝牙权限失败: ' + err));
-            });
-        });
+        return Promise.resolve();
     },
 
     // 创建房间（作为主机）
