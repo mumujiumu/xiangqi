@@ -58,8 +58,9 @@ let bluetoothSide = 'red'; // 蓝牙模式中本地玩家执方
 let animating = false;
 let animState = null;  // { piece, fromR, fromC, toR, toC, startTime, duration, captured }
 
-// 语音播报（静音开关）
-let soundEnabled = true;
+// 语音播报（静音开关）。默认关闭：部分 Android 设备的系统 TTS 引擎不稳定，
+// 默认开启时容易在走棋时触发 native 崩溃。用户可在对局界面手动开启。
+let soundEnabled = false;
 
 function resetGame() {
     board = createInitialBoard();
@@ -605,23 +606,53 @@ function initSpeech() {
 }
 
 // 统一语音播报：原生端走系统 TTS，Web 端走 speechSynthesis
-// 防护：节流防并发 + 失败计数自动禁用，避免 native TTS 崩溃拖垮整个进程
+// 防护：默认关闭、首次使用前安全测试、失败自动禁用、移除 stop() 避免 native 崩溃
 let ttsAvailable = null;    // null=未检测, true=可用, false=已禁用（连续失败后永久关闭）
 let ttsFailCount = 0;
 let lastSpeakTime = 0;
+
+// TTS 安全测试：用一个短文本检测设备 TTS 是否可用，失败则禁用
+async function safeTTSTest(tts) {
+    if (!tts || !tts.speak) return false;
+    try {
+        await tts.speak({
+            text: '测试',
+            lang: SPEECH_LANG,
+            rate: 1.0,
+            pitch: 1.0,
+            volume: 0.01      // 极小音量，避免突兀
+        });
+        ttsAvailable = true;
+        ttsFailCount = 0;
+        return true;
+    } catch (e) {
+        ttsFailCount++;
+        console.warn('TTS 安全测试失败(' + ttsFailCount + ')', e);
+        if (ttsFailCount >= 2) {
+            ttsAvailable = false;
+            console.warn('原生 TTS 已禁用');
+        }
+        return false;
+    }
+}
 
 async function speakText(text, opts) {
     if (!soundEnabled) return;
     opts = opts || {};
     const tts = getNativeTTS();
     if (tts && tts.speak) {
-        if (ttsAvailable === false) return;  // 已禁用，不再触发 native 调用
-        // 节流：两次 TTS 调用至少间隔 350ms，防止 native 层并发初始化崩溃
+        if (ttsAvailable === false) return;  // 已禁用
+        // 未检测时先做安全测试，避免直接调用导致 native 崩溃
+        if (ttsAvailable === null) {
+            const ok = await safeTTSTest(tts);
+            if (!ok) return;
+        }
+        // 节流：两次 TTS 调用至少间隔 350ms，防止 native 层并发
         const now = Date.now();
         if (now - lastSpeakTime < 350) return;
         lastSpeakTime = now;
         try {
-            try { await tts.stop(); } catch (e) { /* 忽略 stop 失败 */ }
+            // 不再调用 tts.stop()：部分设备上 stop() 本身会触发 native 崩溃
             await tts.speak({
                 text: text,
                 lang: SPEECH_LANG,
@@ -629,14 +660,15 @@ async function speakText(text, opts) {
                 pitch: opts.pitch != null ? opts.pitch : 1.0,
                 volume: 1.0
             });
-            ttsAvailable = true;
             ttsFailCount = 0;
         } catch (e) {
             ttsFailCount++;
             console.warn('原生 TTS 失败(' + ttsFailCount + ')', e);
-            // 连续失败 2 次永久禁用，避免反复触发 native 崩溃
             if (ttsFailCount >= 2) {
                 ttsAvailable = false;
+                soundEnabled = false;
+                const btn = document.getElementById('soundBtn');
+                if (btn) btn.textContent = '🔇 语音关';
                 console.warn('原生 TTS 已自动禁用，后续走静音模式');
             }
         }
@@ -1525,11 +1557,28 @@ document.getElementById('flipBtn').addEventListener('click', () => {
     render();
 });
 
-document.getElementById('soundBtn').addEventListener('click', () => {
-    soundEnabled = !soundEnabled;
+document.getElementById('soundBtn').addEventListener('click', async () => {
     const btn = document.getElementById('soundBtn');
-    btn.textContent = soundEnabled ? '🔊 语音开' : '🔇 语音关';
-    if (!soundEnabled) {
+    const willEnable = !soundEnabled;
+
+    if (willEnable) {
+        // 开启语音前先做安全测试，避免设备 TTS 引擎不可用导致崩溃
+        const tts = getNativeTTS();
+        if (tts && tts.speak && ttsAvailable !== false) {
+            btn.textContent = '⏳ 检测中';
+            const ok = await safeTTSTest(tts);
+            if (!ok) {
+                btn.textContent = '🔇 语音关';
+                // 这里不做 alert，避免打断对局；只记录日志
+                console.warn('设备 TTS 引擎不可用，语音保持关闭');
+                return;
+            }
+        }
+        soundEnabled = true;
+        btn.textContent = '🔊 语音开';
+    } else {
+        soundEnabled = false;
+        btn.textContent = '🔇 语音关';
         stopAllSpeech();
     }
 });
