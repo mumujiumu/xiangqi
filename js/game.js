@@ -429,8 +429,16 @@ function orderMoves(b, moves) {
     }).sort((a, b2) => b2.score - a.score).map(x => x.move);
 }
 
-// Minimax + Alpha-Beta 剪枝
-function minimax(b, depth, alpha, beta, maximizing, aiSide) {
+// 获取时间戳（兼容老款 WebView / 极旧环境）
+function nowMs() {
+    return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+// Minimax + Alpha-Beta 剪枝（带时间预算 deadline，防止主线程长时间阻塞引发 ANR 闪退）
+function minimax(b, depth, alpha, beta, maximizing, aiSide, deadline) {
+    // 时间预算保护：超过截止时间立即用静态评估返回，截断深层搜索
+    if (deadline > 0 && nowMs() > deadline) return evaluateBoard(b, aiSide);
+
     if (depth === 0) return evaluateBoard(b, aiSide);
 
     const side = maximizing ? aiSide : (aiSide === 'red' ? 'black' : 'red');
@@ -446,7 +454,7 @@ function minimax(b, depth, alpha, beta, maximizing, aiSide) {
             b[move.to.row][move.to.col] = piece;
             b[move.from.row][move.from.col] = null;
 
-            const evalScore = minimax(b, depth - 1, alpha, beta, false, aiSide);
+            const evalScore = minimax(b, depth - 1, alpha, beta, false, aiSide, deadline);
 
             b[move.from.row][move.from.col] = piece;
             b[move.to.row][move.to.col] = captured;
@@ -464,7 +472,7 @@ function minimax(b, depth, alpha, beta, maximizing, aiSide) {
             b[move.to.row][move.to.col] = piece;
             b[move.from.row][move.from.col] = null;
 
-            const evalScore = minimax(b, depth - 1, alpha, beta, true, aiSide);
+            const evalScore = minimax(b, depth - 1, alpha, beta, true, aiSide, deadline);
 
             b[move.from.row][move.from.col] = piece;
             b[move.to.row][move.to.col] = captured;
@@ -478,7 +486,7 @@ function minimax(b, depth, alpha, beta, maximizing, aiSide) {
 }
 
 // AI 找最佳走法
-function findBestMove(b, side, depth) {
+function findBestMove(b, side, depth, deadline) {
     const moves = orderMoves(b, getAllLegalMoves(b, side));
     if (moves.length === 0) return null;
 
@@ -497,7 +505,7 @@ function findBestMove(b, side, depth) {
         b[move.to.row][move.to.col] = piece;
         b[move.from.row][move.from.col] = null;
 
-        const score = minimax(b, depth - 1, -Infinity, Infinity, false, side);
+        const score = minimax(b, depth - 1, -Infinity, Infinity, false, side, deadline);
 
         b[move.from.row][move.from.col] = piece;
         b[move.to.row][move.to.col] = captured;
@@ -510,6 +518,8 @@ function findBestMove(b, side, depth) {
         } else if (score === bestScore) {
             candidates.push(move);
         }
+        // 时间预算：每评估一个走法后检查，超时立即返回当前最优（防止 ANR 闪退）
+        if (deadline > 0 && nowMs() > deadline) break;
     }
 
     // 同分走法中随机选一个
@@ -540,7 +550,11 @@ function scheduleAI() {
     // 短延迟让思考动画先渲染出来，再开始 CPU 密集计算
     setTimeout(() => {
         if (myTaskId !== aiTaskId) return;  // 已过期（用户重开 / 换边）
-        const move = findBestMove(board, currentSide, aiDepth);
+        // 时间预算：按难度限制主线程最长占用，老款手机也不会因长时间阻塞被系统杀掉
+        const AI_BUDGET = { 1: 220, 2: 380, 3: 550 };
+        const budget = AI_BUDGET[aiDepth] || 380;
+        const deadline = nowMs() + budget;
+        const move = findBestMove(board, currentSide, aiDepth, deadline);
         const elapsed = performance.now() - aiStartTime;
         const remain = aiThinkTime - elapsed;
         const finish = () => {
