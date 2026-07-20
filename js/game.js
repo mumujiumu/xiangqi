@@ -53,6 +53,7 @@ function resetGame() {
     validMoves = [];
     history = [];
     captured = { red: [], black: [] };
+    aiTaskId++;            // 让进行中的 worker 计算结果失效
     aiThinking = false;
     updateUI();
     render();
@@ -499,6 +500,55 @@ function findBestMove(b, side, depth) {
     return candidates[Math.floor(Math.random() * candidates.length)] || bestMove;
 }
 
+// AI Worker：在独立线程跑 Minimax 搜索，避免阻塞主线程导致卡顿 / ANR 闪退
+let aiWorker = null;
+let aiTaskId = 0;      // 每次调度递增，用于丢弃过期计算结果（重开 / 换边后旧结果作废）
+let aiStartTime = 0;   // 本轮思考开始时间
+let aiThinkTime = 0;   // 本轮最低思考时长（保持节奏感，避免秒走）
+
+function getAIWorker() {
+    if (aiWorker) return aiWorker;
+    if (typeof Worker === 'undefined') return null;  // 环境不支持 Worker
+    try {
+        aiWorker = new Worker('js/ai-worker.js');
+        aiWorker.onmessage = (e) => {
+            const data = e.data || {};
+            const move = data.move, taskId = data.taskId, error = data.error;
+            // 过期结果（用户已重开 / 换边）直接丢弃
+            if (taskId !== aiTaskId) return;
+            if (error) console.warn('AI worker error:', error);
+
+            const finish = () => {
+                aiThinking = false;
+                if (move) {
+                    makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
+                } else {
+                    updateUI();
+                    render();
+                }
+            };
+
+            // 保持思考节奏：计算快时补足 thinkTime，计算慢时立即执行（此时主线程一直流畅）
+            const elapsed = performance.now() - aiStartTime;
+            const remain = aiThinkTime - elapsed;
+            if (remain > 10) {
+                setTimeout(finish, remain);
+            } else {
+                finish();
+            }
+        };
+        aiWorker.onerror = (e) => {
+            console.warn('AI worker 加载失败，降级到主线程计算', e);
+            aiWorker = null;
+        };
+        return aiWorker;
+    } catch (e) {
+        console.warn('AI worker 初始化失败，降级到主线程计算', e);
+        aiWorker = null;
+        return null;
+    }
+}
+
 // 调度 AI 走棋（异步，不阻塞 UI）
 function scheduleAI() {
     if (gameMode !== 'pve' || currentSide !== aiSide || aiThinking) return;
@@ -506,21 +556,40 @@ function scheduleAI() {
     updateUI();
     startAIThinkAnim();
 
-    // 根据难度决定思考延时（毫秒）
-    const thinkTime = aiDepth <= 1 ? (600 + Math.random() * 400)
-                    : aiDepth === 3 ? (900 + Math.random() * 600)
-                    : (1200 + Math.random() * 800);
+    // 根据难度决定最低思考时长（毫秒）——保持节奏感，避免秒走
+    aiThinkTime = aiDepth <= 1 ? (600 + Math.random() * 400)
+                : aiDepth === 3 ? (900 + Math.random() * 600)
+                : (1200 + Math.random() * 800);
+    aiStartTime = performance.now();
+    aiTaskId++;
+    const myTaskId = aiTaskId;
 
-    setTimeout(() => {
-        const move = findBestMove(board, currentSide, aiDepth);
-        aiThinking = false;
-        if (move) {
-            makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
-        } else {
-            updateUI();
-            render();
-        }
-    }, thinkTime);
+    const worker = getAIWorker();
+    if (worker) {
+        // Worker 可用：后台计算，主线程零阻塞
+        // 棋盘通过结构化克隆传给 worker，worker 内改动不影响主线程
+        worker.postMessage({ board: board, side: currentSide, depth: aiDepth, taskId: myTaskId });
+    } else {
+        // 降级：Worker 不可用时在主线程同步计算
+        // 限制实际搜索深度避免长时间阻塞（困难最多用 3，中等用 2）
+        const fallbackDepth = aiDepth >= 4 ? 3 : Math.min(aiDepth, 2);
+        setTimeout(() => {
+            if (myTaskId !== aiTaskId) return;  // 已过期
+            const move = findBestMove(board, currentSide, fallbackDepth);
+            const elapsed = performance.now() - aiStartTime;
+            const remain = aiThinkTime - elapsed;
+            const finish = () => {
+                aiThinking = false;
+                if (move) {
+                    makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
+                } else {
+                    updateUI();
+                    render();
+                }
+            };
+            if (remain > 10) setTimeout(finish, remain); else finish();
+        }, 50);  // 短延迟让 UI 先刷新出思考动画
+    }
 }
 
 // AI 思考时的动画循环（跳动省略号）
@@ -935,107 +1004,117 @@ function render() {
     if (aiThinking) drawAIThinking();
 }
 
-function drawBoard() {
-    const grad = ctx.createLinearGradient(0, 0, 0, BOARD_H);
+// 预渲染棋盘背景到离屏 canvas（渐变 + 木纹 + 网格 + 九宫 + 楚河汉界 + 位置标记）
+// 这些都是静态内容，预渲染后每帧只需 drawImage，避免 60fps 循环里重复绘制 40 条
+// 随机木纹曲线带来的 CPU 开销与画面抖动
+const boardBgCanvas = document.createElement('canvas');
+boardBgCanvas.width = BOARD_W;
+boardBgCanvas.height = BOARD_H;
+(function buildBoardBackground() {
+    const c = boardBgCanvas.getContext('2d');
+
+    // 渐变底色
+    const grad = c.createLinearGradient(0, 0, 0, BOARD_H);
     grad.addColorStop(0, '#f5d99a');
     grad.addColorStop(0.5, '#ecd088');
     grad.addColorStop(1, '#e8c478');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, BOARD_W, BOARD_H);
+    c.fillStyle = grad;
+    c.fillRect(0, 0, BOARD_W, BOARD_H);
 
-    ctx.strokeStyle = 'rgba(160, 110, 50, 0.08)';
-    ctx.lineWidth = 1;
+    // 木纹纹理（只画一次，固定下来，不再每帧抖动）
+    c.strokeStyle = 'rgba(160, 110, 50, 0.08)';
+    c.lineWidth = 1;
     for (let i = 0; i < 40; i++) {
-        ctx.beginPath();
+        c.beginPath();
         const y = Math.random() * BOARD_H;
-        ctx.moveTo(0, y);
-        ctx.bezierCurveTo(BOARD_W * 0.3, y + 4, BOARD_W * 0.7, y - 4, BOARD_W, y);
-        ctx.stroke();
+        c.moveTo(0, y);
+        c.bezierCurveTo(BOARD_W * 0.3, y + 4, BOARD_W * 0.7, y - 4, BOARD_W, y);
+        c.stroke();
     }
 
-    ctx.strokeStyle = '#6b4220';
-    ctx.lineWidth = 1.5;
-
+    // 横线
+    c.strokeStyle = '#6b4220';
+    c.lineWidth = 1.5;
     for (let r = 0; r < 10; r++) {
         const y = OFFSET_Y + r * CELL;
-        ctx.beginPath();
-        ctx.moveTo(OFFSET_X, y);
-        ctx.lineTo(OFFSET_X + 8 * CELL, y);
-        ctx.stroke();
+        c.beginPath();
+        c.moveTo(OFFSET_X, y);
+        c.lineTo(OFFSET_X + 8 * CELL, y);
+        c.stroke();
     }
 
-    for (let c = 0; c < 9; c++) {
-        const x = OFFSET_X + c * CELL;
-        ctx.beginPath();
-        if (c === 0 || c === 8) {
-            ctx.moveTo(x, OFFSET_Y);
-            ctx.lineTo(x, OFFSET_Y + 9 * CELL);
+    // 竖线
+    for (let col = 0; col < 9; col++) {
+        const x = OFFSET_X + col * CELL;
+        c.beginPath();
+        if (col === 0 || col === 8) {
+            c.moveTo(x, OFFSET_Y);
+            c.lineTo(x, OFFSET_Y + 9 * CELL);
         } else {
-            ctx.moveTo(x, OFFSET_Y);
-            ctx.lineTo(x, OFFSET_Y + 4 * CELL);
-            ctx.moveTo(x, OFFSET_Y + 5 * CELL);
-            ctx.lineTo(x, OFFSET_Y + 9 * CELL);
+            c.moveTo(x, OFFSET_Y);
+            c.lineTo(x, OFFSET_Y + 4 * CELL);
+            c.moveTo(x, OFFSET_Y + 5 * CELL);
+            c.lineTo(x, OFFSET_Y + 9 * CELL);
         }
-        ctx.stroke();
+        c.stroke();
     }
 
-    ctx.lineWidth = 1.5;
-    drawDiagonal(3, 0, 5, 2);
-    drawDiagonal(5, 0, 3, 2);
-    drawDiagonal(3, 7, 5, 9);
-    drawDiagonal(5, 7, 3, 9);
+    // 九宫斜线
+    c.lineWidth = 1.5;
+    const drawDiag = (c1, r1, c2, r2) => {
+        const p1 = posToPixel(r1, c1), p2 = posToPixel(r2, c2);
+        c.beginPath();
+        c.moveTo(p1.x, p1.y);
+        c.lineTo(p2.x, p2.y);
+        c.stroke();
+    };
+    drawDiag(3, 0, 5, 2);
+    drawDiag(5, 0, 3, 2);
+    drawDiag(3, 7, 5, 9);
+    drawDiag(5, 7, 3, 9);
 
-    ctx.fillStyle = '#6b4220';
-    ctx.font = 'bold 26px "KaiTi", "STKaiti", serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    // 楚河汉界
+    c.fillStyle = '#6b4220';
+    c.font = 'bold 26px "KaiTi", "STKaiti", serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
     const riverY = OFFSET_Y + 4.5 * CELL;
-    ctx.fillText('楚  河', OFFSET_X + 2 * CELL, riverY);
-    ctx.fillText('漢  界', OFFSET_X + 6 * CELL, riverY);
+    c.fillText('楚  河', OFFSET_X + 2 * CELL, riverY);
+    c.fillText('漢  界', OFFSET_X + 6 * CELL, riverY);
 
-    drawPositionMarks();
-}
-
-function drawDiagonal(c1, r1, c2, r2) {
-    const p1 = posToPixel(r1, c1);
-    const p2 = posToPixel(r2, c2);
-    ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y);
-    ctx.lineTo(p2.x, p2.y);
-    ctx.stroke();
-}
-
-function drawPositionMarks() {
+    // 位置标记（兵炮位十字标）
     const marks = [
         [2, 1], [2, 7], [7, 1], [7, 7],
         [3, 0], [3, 2], [3, 4], [3, 6], [3, 8],
         [6, 0], [6, 2], [6, 4], [6, 6], [6, 8]
     ];
-    marks.forEach(([r, c]) => drawCrossMark(r, c));
-}
-
-function drawCrossMark(row, col) {
-    const { x, y } = posToPixel(row, col);
-    const size = 5, gap = 4;
-    ctx.strokeStyle = '#6b4220';
-    ctx.lineWidth = 1.2;
-    const corners = [
-        { dx: -1, dy: -1, draw: col > 0 },
-        { dx:  1, dy: -1, draw: col < 8 },
-        { dx: -1, dy:  1, draw: col > 0 },
-        { dx:  1, dy:  1, draw: col < 8 }
-    ];
-    corners.forEach(({ dx, dy, draw }) => {
-        if (!draw) return;
-        const cx = x + dx * gap;
-        const cy = y + dy * gap;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + dx * size, cy);
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx, cy + dy * size);
-        ctx.stroke();
+    marks.forEach(([r, col]) => {
+        const { x, y } = posToPixel(r, col);
+        const size = 5, gap = 4;
+        c.strokeStyle = '#6b4220';
+        c.lineWidth = 1.2;
+        const corners = [
+            { dx: -1, dy: -1, draw: col > 0 },
+            { dx:  1, dy: -1, draw: col < 8 },
+            { dx: -1, dy:  1, draw: col > 0 },
+            { dx:  1, dy:  1, draw: col < 8 }
+        ];
+        corners.forEach(({ dx, dy, draw }) => {
+            if (!draw) return;
+            const cx = x + dx * gap, cy = y + dy * gap;
+            c.beginPath();
+            c.moveTo(cx, cy);
+            c.lineTo(cx + dx * size, cy);
+            c.moveTo(cx, cy);
+            c.lineTo(cx, cy + dy * size);
+            c.stroke();
+        });
     });
+})();
+
+// drawBoard 现在只画一张预渲染好的背景图，开销极低
+function drawBoard() {
+    ctx.drawImage(boardBgCanvas, 0, 0);
 }
 
 function drawHighlights() {

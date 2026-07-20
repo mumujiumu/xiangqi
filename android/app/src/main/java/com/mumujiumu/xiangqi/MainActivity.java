@@ -19,7 +19,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         // 从系统设置返回时再次检查权限，处理用户首次拒绝后再次打开 app 的情况
         requestBluetoothPermissions();
@@ -39,7 +39,7 @@ public class MainActivity extends BridgeActivity {
                     Manifest.permission.BLUETOOTH_CONNECT,
                     Manifest.permission.BLUETOOTH_SCAN,
                     Manifest.permission.BLUETOOTH_ADVERTISE,
-                    Manifest.permission.NEARBY_DEVICES
+                    "android.permission.NEARBY_DEVICES"
                 };
             }
 
