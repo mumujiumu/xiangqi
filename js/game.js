@@ -526,13 +526,96 @@ function findBestMove(b, side, depth, deadline) {
     return candidates[Math.floor(Math.random() * candidates.length)] || bestMove;
 }
 
-// AI 调度：主线程同步计算 + 短延迟让 UI 先刷新思考动画
-// 搜索深度已按手机性能调优（困难=3, 中等=2, 简单=1），配合思考延时不会触发 ANR
+// ============ AI 计算调度（Web Worker 后台线程，杜绝主线程阻塞） ============
+// 根因修复：原实现把 Minimax/Alpha-Beta 搜索放在主线程同步执行（git 历史 v2.1.5
+// 误删了 v2.1.4 的 Web Worker）。在低端 Android 15 设备上，同步搜索会长时间阻塞 UI
+// 线程，触发系统渲染进程看门狗 / ANR 杀掉应用（无 native 崩溃日志，正符合“进入人机
+// 必崩”的现象）。现改为把 AI 搜索放进 Web Worker 后台线程执行；若 Worker 不可用
+// （如个别 Capacitor WebView 环境），则降级为「带时间预算 + try/catch」的主线程
+// 兜底计算。无论哪条路径，都保证：① 主线程不被长时间阻塞；② 异常时降级随机走子
+// 而非卡死 / 崩溃。
 let aiTaskId = 0;      // 每次调度递增，用于丢弃过期计算结果（重开 / 换边后旧结果作废）
 let aiStartTime = 0;   // 本轮思考开始时间
 let aiThinkTime = 0;   // 本轮最低思考时长（保持节奏感，避免秒走）
 
-// 调度 AI 走棋（异步 setTimeout，让 UI 先刷新出思考动画再开始计算）
+// 主线程兜底：带时间预算 + 异常降级。仅在 Worker 不可用时使用。
+function syncFallbackMove(b, side, depth, budgetMs) {
+    try {
+        const deadline = nowMs() + budgetMs;
+        const mv = findBestMove(b, side, depth, deadline);
+        if (mv && mv.from && mv.to) return mv;
+    } catch (e) {
+        console.warn('主线程 AI 计算异常，降级为随机合法走法:', e);
+    }
+    // 降级：随机合法走法（绝不抛异常、绝不返回非法着法）
+    try {
+        const moves = getAllLegalMoves(b, side);
+        if (moves.length) return moves[Math.floor(Math.random() * moves.length)];
+    } catch (_) { /* 忽略 */ }
+    return null;
+}
+
+// 获取（懒创建）AI Web Worker。Capacitor WebView 下用相对路径 'js/ai.worker.js'
+// （相对 index.html，即 assets/public/js/ai.worker.js），same-origin classic worker，
+// 与原生环境兼容。若创建失败则标记失败，之后一律走主线程兜底。
+let aiWorker = null;
+let aiWorkerFailed = false;
+function getAIWorker() {
+    if (aiWorkerFailed) return null;
+    if (aiWorker) return aiWorker;
+    try {
+        aiWorker = new Worker('js/ai.worker.js'); // classic worker，兼容 Android WebView
+        aiWorker.onerror = () => { aiWorkerFailed = true; };
+        return aiWorker;
+    } catch (e) {
+        console.warn('AI Worker 创建失败，降级主线程计算:', e);
+        aiWorkerFailed = true;
+        return null;
+    }
+}
+
+// 在后台线程计算 AI 着法。onMove(move) 一定会被调用一次（worker 成功 / 超时 / 失败）。
+function computeAIMove(b, side, depth, budgetMs, reqId, onMove) {
+    const w = getAIWorker();
+    if (!w) { onMove(syncFallbackMove(b, side, depth, budgetMs)); return; }
+
+    let settled = false;
+    const settle = (mv) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hardTimer);
+        w.removeEventListener('message', onMsg);
+        w.removeEventListener('error', onErr);
+        onMove(mv);
+    };
+
+    // 硬超时兜底：即使 Worker 卡死，主线程也不会无限等待（Worker 本身不阻塞主线程，
+    // 这里只是确保一定能拿到着法继续对局）
+    const hardTimer = setTimeout(() => {
+        settle(syncFallbackMove(b, side, depth, budgetMs));
+    }, Math.max(2000, budgetMs * 4));
+
+    const onMsg = (e) => {
+        if (!e.data || e.data.reqId !== reqId) return; // 过期响应，忽略
+        const m = e.data.move;
+        settle((m && m.from && m.to) ? m : syncFallbackMove(b, side, depth, budgetMs));
+    };
+    const onErr = () => {
+        aiWorkerFailed = true;
+        settle(syncFallbackMove(b, side, depth, budgetMs));
+    };
+    w.addEventListener('message', onMsg);
+    w.addEventListener('error', onErr);
+
+    try {
+        w.postMessage({ reqId: reqId, board: b, side: side, depth: depth, budget: budgetMs });
+    } catch (e) {
+        // postMessage 失败（如序列化错误），直接用兜底
+        settle(syncFallbackMove(b, side, depth, budgetMs));
+    }
+}
+
+// 调度 AI 走棋：思考动画先渲染，AI 搜索在 Worker 后台线程执行，不阻塞 UI / 不触发 ANR
 function scheduleAI() {
     if (gameMode !== 'pve' || currentSide !== aiSide || aiThinking) return;
     aiThinking = true;
@@ -547,20 +630,19 @@ function scheduleAI() {
     aiTaskId++;
     const myTaskId = aiTaskId;
 
-    // 短延迟让思考动画先渲染出来，再开始 CPU 密集计算
-    setTimeout(() => {
+    // 时间预算：按难度限制后台搜索最长占用（同时作为主线程兜底的预算）
+    const AI_BUDGET = { 1: 220, 2: 380, 3: 550 };
+    const budget = AI_BUDGET[aiDepth] || 380;
+
+    // 后台线程计算（不阻塞主线程，杜绝 ANR / 渲染进程被杀）
+    computeAIMove(board, currentSide, aiDepth, budget, myTaskId, (move) => {
         if (myTaskId !== aiTaskId) return;  // 已过期（用户重开 / 换边）
-        // 时间预算：按难度限制主线程最长占用，老款手机也不会因长时间阻塞被系统杀掉
-        const AI_BUDGET = { 1: 220, 2: 380, 3: 550 };
-        const budget = AI_BUDGET[aiDepth] || 380;
-        const deadline = nowMs() + budget;
-        const move = findBestMove(board, currentSide, aiDepth, deadline);
         const elapsed = performance.now() - aiStartTime;
         const remain = aiThinkTime - elapsed;
         const finish = () => {
             aiThinking = false;
             if (myTaskId !== aiTaskId) return;  // 再次检查过期
-            if (move) {
+            if (move && move.from && move.to) {
                 makeMove(move.from.row, move.from.col, move.to.row, move.to.col);
             } else {
                 updateUI();
@@ -568,7 +650,7 @@ function scheduleAI() {
             }
         };
         if (remain > 10) setTimeout(finish, remain); else finish();
-    }, 60);
+    });
 }
 
 // AI 思考时的动画循环（跳动省略号）
